@@ -880,10 +880,13 @@ class Input:
 
   def sanitised_name(self) -> str:
     """Returns sanitised version of the name that can be used as a filename."""
-    lower_spaceless_name = self.name.lower().replace(' ', '_')
-    allowed_chars = set(string.ascii_lowercase + string.digits + '_-.')
-    return ''.join(l for l in lower_spaceless_name if l in allowed_chars)
-
+    #lower_spaceless_name = self.name.lower().replace(' ', '_')   
+    #allowed_chars = set(string.ascii_lowercase + string.digits + '_-.')
+    #return ''.join(l for l in lower_spaceless_name if l in allowed_chars)
+    spaceless_name = self.name.replace(' ', '_')
+    allowed_chars = set(string.ascii_letters + string.digits + '_-.')
+    return ''.join(l for l in spaceless_name if l in allowed_chars)
+  
   @classmethod
   def from_alphafoldserver_fold_job(cls, fold_job: Mapping[str, Any]) -> Self:
     """Constructs Input from an AlphaFoldServer fold job."""
@@ -1335,17 +1338,25 @@ class Input:
     ]
     return dataclasses.replace(self, chains=with_missing_fields)
 
-  def with_multiple_seeds(self, num_seeds: int) -> Self:
+  def with_multiple_seeds(self, num_seeds: int,seed_sampling=False) -> Self:
     """Returns a copy of the input with num_seeds rng seeds."""
-    if num_seeds <= 1:
-      raise ValueError('Number of seeds must be greater than 1.')
-    if len(self.rng_seeds) != 1:
-      raise ValueError('Input must have one rng seed to set multiple seeds.')
+    if seed_sampling: 
+      return dataclasses.replace(
+          self,
+          rng_seeds=[_sample_rng_seed() for _ in range(num_seeds)]
+      )
 
-    return dataclasses.replace(
-        self,
-        rng_seeds=list(range(self.rng_seeds[0], self.rng_seeds[0] + num_seeds)),
-    )
+    else: # If not sampling, we want to set the seeds to be consecutive, which is also the AF3 default.
+      #It should be fine since it will simply be the same seed for each model.
+      #if num_seeds <= 1:
+      #  raise ValueError('Number of seeds must be greater than 1.')
+      if len(self.rng_seeds) != 1:
+        raise ValueError('Input must have one rng seed to set multiple seeds.')
+
+      return dataclasses.replace(
+          self,
+          rng_seeds=list(range(self.rng_seeds[0], self.rng_seeds[0] + num_seeds)),
+      )
 
 
 def load_fold_inputs_from_path(json_path: pathlib.Path) -> Iterator[Input]:

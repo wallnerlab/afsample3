@@ -206,7 +206,7 @@ class Msa:
   ) -> Self:
     """Parses the single A3M and builds the Msa object."""
     sequences, descriptions = parsers.parse_fasta(a3m)
-
+  
     if max_depth is not None and 0 < max_depth < len(sequences):
       logging.info(
           'MSA cropped from depth of %d to %d for %s.',

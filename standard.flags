@@ -1,0 +1,4 @@
+--db_dir=/proj/wallner-b/share/alphafold3_data/
+--model_dir=/proj/wallner-b/share/alphafold3_data/params
+--flash_attention_implementation=xla
+--output_dir=models/

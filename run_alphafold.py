@@ -18,6 +18,8 @@ out at https://github.com/google-deepmind/alphafold3. You may only use these
 if received directly from Google. Use is subject to terms of use available at
 https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 """
+import sys
+#sys.path.insert(0, '/proj/wallner-b/users/x_bjowa/af3-dev/src')
 
 from collections.abc import Callable, Sequence
 import csv
@@ -263,7 +265,15 @@ _NUM_SEEDS = flags.DEFINE_integer(
     ' the input JSON.',
     lower_bound=1,
 )
-
+_SEED_SAMPLING= flags.DEFINE_bool(
+    'seed_sampling',
+    False, 
+    'Whether to sample seeds randomly rather than increment from one inital seed,',
+)
+_MSA_RAND_FRACTION= flags.DEFINE_float('msa_rand_fraction', 
+                                       0, 
+                                       'Level of MSA randomization (0-1)', 
+                                       lower_bound=0, upper_bound=1)
 # Output controls.
 _SAVE_EMBEDDINGS = flags.DEFINE_bool(
     'save_embeddings',
@@ -391,6 +401,7 @@ class ResultsForSeed:
 def predict_structure(
     fold_input: folding_input.Input,
     model_runner: ModelRunner,
+    output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
     conformer_max_iterations: int | None = None,
 ) -> Sequence[ResultsForSeed]:
@@ -406,6 +417,8 @@ def predict_structure(
       verbose=True,
       conformer_max_iterations=conformer_max_iterations,
   )
+
+
   print(
       f'Featurising data with {len(fold_input.rng_seeds)} seed(s) took'
       f' {time.time() - featurisation_start_time:.2f} seconds.'
@@ -417,6 +430,23 @@ def predict_structure(
   all_inference_start_time = time.time()
   all_inference_results = []
   for seed, example in zip(fold_input.rng_seeds, featurised_examples):
+
+    
+    columns_to_randomize=[]
+    if _MSA_RAND_FRACTION.value > 0:
+      print(f'MSA_RAND_FRACTION {_MSA_RAND_FRACTION.value}')
+      #The MSA is padded so apply the masking to the seq_length first columns
+      nres=example['seq_length']
+      rng=np.random.default_rng(seed) # Seed the random number generator, the seed will be sampled when MSA_RAND_FRACTION > 0
+      columns_to_randomize = rng.choice(range(0, nres), 
+                                            size=int(nres*_MSA_RAND_FRACTION.value), 
+                                            replace=False) # Without replacement
+      print(f'Randoming the following columns:',[int(a) for a in sorted(columns_to_randomize)])  
+      for col in columns_to_randomize:
+        example['msa'][1:, col] = np.array([20]*(example['msa'].shape[0]-1))  
+      #print(example['msa'][0,:])
+      #print(example['msa'][1,:])
+    #continue
     print(f'Running model inference with seed {seed}...')
     inference_start_time = time.time()
     rng_key = jax.random.PRNGKey(seed)
@@ -430,6 +460,12 @@ def predict_structure(
     inference_results = model_runner.extract_structures(
         batch=example, result=result, target_name=fold_input.name
     )
+    for inference_result in inference_results:
+      #print(inference_result)
+     # print(inference_result.metadata)
+      inference_result.metadata['msa_rand_fraction']=_MSA_RAND_FRACTION.value
+      inference_result.metadata['msa_rand_columns']=[int(a) for a in sorted(columns_to_randomize)]
+
     print(
         f'Extracting {len(inference_results)} output structure samples with'
         f' seed {seed} took {time.time() - extract_structures:.2f} seconds.'
@@ -445,6 +481,10 @@ def predict_structure(
             embeddings=embeddings,
         )
     )
+    #write out single seed results
+    print(f'Writing out results for seed {seed} to {output_dir}')
+    write_outputs([all_inference_results[-1]], output_dir, fold_input.sanitised_name()) 
+
   print(
       'Running model inference and extracting output structures with'
       f' {len(fold_input.rng_seeds)} seed(s) took'
@@ -620,6 +660,7 @@ def process_fold_input(
     all_inference_results = predict_structure(
         fold_input=fold_input,
         model_runner=model_runner,
+        output_dir=output_dir,
         buckets=buckets,
         conformer_max_iterations=conformer_max_iterations,
     )
@@ -770,7 +811,8 @@ def main(_):
   for fold_input in fold_inputs:
     if _NUM_SEEDS.value is not None:
       print(f'Expanding fold job {fold_input.name} to {_NUM_SEEDS.value} seeds')
-      fold_input = fold_input.with_multiple_seeds(_NUM_SEEDS.value)
+      fold_input = fold_input.with_multiple_seeds(_NUM_SEEDS.value,seed_sampling=_SEED_SAMPLING.value or _MSA_RAND_FRACTION.value > 0)
+      #print(fold_input)
     process_fold_input(
         fold_input=fold_input,
         data_pipeline_config=data_pipeline_config,

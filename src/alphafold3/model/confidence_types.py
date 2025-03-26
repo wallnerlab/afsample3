@@ -46,7 +46,9 @@ class StructureConfidenceFullEncoder(json.JSONEncoder):
   "contact_probs": %s,
   "pae": %s,
   "token_chain_ids": %s,
-  "token_res_ids": %s
+  "token_res_ids": %s,
+  "msa_rand_fraction": %s, 
+  "msa_rand_columns": %s
 }""" % (
         super().encode(o.atom_chain_ids),
         super().encode(list(atom_plddts)).replace('NaN', 'null'),
@@ -54,6 +56,8 @@ class StructureConfidenceFullEncoder(json.JSONEncoder):
         super().encode([list(x) for x in pae]).replace('NaN', 'null'),
         super().encode(o.token_chain_ids),
         super().encode(o.token_res_ids),
+        super().encode(o.msa_rand_fraction),
+        super().encode(o.msa_rand_columns),
     )
 
 
@@ -255,6 +259,8 @@ class StructureConfidenceFull:
   atom_plddts: list[float]
   atom_chain_ids: list[str]
   contact_probs: np.ndarray  # [num_tokens, num_tokens]
+  msa_rand_fraction: float
+  msa_rand_columns: list[int]
 
   @classmethod
   def from_inference_result(
@@ -282,6 +288,10 @@ class StructureConfidenceFull:
     token_res_ids = [
         int(token_id) for token_id in inference_result.metadata['token_res_ids']
     ]
+    msa_rand_fraction=inference_result.metadata['msa_rand_fraction']
+    msa_rand_columns=inference_result.metadata['msa_rand_columns']
+
+
     return cls(
         pae=pae,
         token_chain_ids=token_chain_ids,
@@ -289,6 +299,8 @@ class StructureConfidenceFull:
         atom_plddts=atom_plddts,
         atom_chain_ids=chain_ids,
         contact_probs=contact_probs,
+        msa_rand_fraction=msa_rand_fraction,
+        msa_rand_columns=msa_rand_columns
     )
 
   @classmethod
