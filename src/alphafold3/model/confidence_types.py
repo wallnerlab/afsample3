@@ -243,7 +243,7 @@ class StructureConfidenceSummary:
         # cast to a 64 bit float, potentially undoing np.float32 rounding.
         rounded_data = np.round(data.astype(np.float64), decimals=2).tolist()
       else:
-        rounded_data = np.round(data, decimals=2)
+        rounded_data = np.round(data, decimals=5)
       return rounded_data
 
     return _dump_json(jax.tree.map(convert, dataclasses.asdict(self)), indent=1)

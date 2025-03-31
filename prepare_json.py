@@ -42,7 +42,8 @@ def protein_to_dict(seq,id='A',modifications=[], unpairedMSA=None,pairedMSA='',t
 def main(argv):
     #pass
     seq=read_fasta(FLAGS.fasta)
-    print(seq)
+    
+    #print(seq)
     #print (seq)
     #print(FLAGS.fasta)
     #print(FLAGS.msa)

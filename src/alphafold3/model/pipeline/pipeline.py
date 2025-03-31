@@ -26,7 +26,6 @@ from alphafold3.model.pipeline import structure_cleaning
 from alphafold3.structure import chemical_components as struc_chem_comps
 import numpy as np
 
-
 _DETERMINISTIC_FRAMES_RANDOM_SEED = 12312837
 
 

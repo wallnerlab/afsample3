@@ -19,7 +19,10 @@ from alphafold3.constants import chemical_components
 from alphafold3.model import features
 from alphafold3.model.pipeline import pipeline
 import numpy as np
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor 
 
+from functools import partial
 
 def validate_fold_input(fold_input: folding_input.Input):
   """Validates the fold input contains MSA and templates for featurisation."""
@@ -34,6 +37,38 @@ def validate_fold_input(fold_input: folding_input.Input):
     if chain.unpaired_msa is None:
       raise ValueError(f'RNA chain {i + 1} is missing unpaired MSA.')
 
+def process_seed(pipeline_config,fold_input,ccd, verbose,rng_seed):
+    featurisation_start_time = time.time()
+    if verbose:
+        print(f'Featurising data with seed {rng_seed}.')
+    data_pipeline = pipeline.WholePdbPipeline(config=pipeline_config)
+    batch = data_pipeline.process_item(
+        fold_input=fold_input,
+        ccd=ccd,
+        random_state=np.random.RandomState(rng_seed),
+        random_seed=rng_seed,
+    )
+    
+    if verbose:
+        print(
+            f'Featurising data with seed {rng_seed} took'
+            f' {time.time() - featurisation_start_time:.2f} seconds.'
+        )
+    
+    return batch
+#def process_seed_wrapper(pipeline_config,fold_input,rng_seed,ccd, verbose): #ng_seed):
+#      return process_seed(pipeline_config, fold_input, rng_seed, ccd, verbose)
+
+def process_batches(pipeline_config,fold_input, ccd, verbose=False, num_workers=1):
+  print('Number of workers:', num_workers)
+  print('Number of seeds:', len(fold_input.rng_seeds))
+  process_seed_wrapper = partial(process_seed, pipeline_config, fold_input,ccd,verbose)
+  
+  with ProcessPoolExecutor(max_workers=num_workers) as executor:
+      batches = list(executor.map(process_seed_wrapper, fold_input.rng_seeds))
+  return batches
+
+
 
 def featurise_input(
     fold_input: folding_input.Input,
@@ -42,6 +77,7 @@ def featurise_input(
     max_template_date: datetime.date | None = None,
     conformer_max_iterations: int | None = None,
     verbose: bool = False,
+    num_workers: int = 1,
 ) -> Sequence[features.BatchDict]:
   """Featurise the folding input.
 
@@ -64,31 +100,45 @@ def featurise_input(
   """
   validate_fold_input(fold_input)
 
-  # Set up data pipeline for single use.
-  data_pipeline = pipeline.WholePdbPipeline(
-      config=pipeline.WholePdbPipeline.Config(
+ 
+ 
+
+  if num_workers>1:
+    multiprocessing.set_start_method("spawn", force=True)
+    pipeline_config = pipeline.WholePdbPipeline.Config(
+        buckets=buckets,
+        max_template_date=max_template_date,
+        conformer_max_iterations=conformer_max_iterations,
+    )
+    return process_batches(pipeline_config,fold_input, ccd, verbose=verbose, num_workers=num_workers)
+  else:
+
+    # Set up data pipeline for single use.
+    data_pipeline = pipeline.WholePdbPipeline(
+        config=pipeline.WholePdbPipeline.Config(
           buckets=buckets,
           max_template_date=max_template_date,
           conformer_max_iterations=conformer_max_iterations,
       ),
-  )
+    ) 
 
-  batches = []
-  for rng_seed in fold_input.rng_seeds:
-    featurisation_start_time = time.time()
-    if verbose:
-      print(f'Featurising data with seed {rng_seed}.')
-    batch = data_pipeline.process_item(
-        fold_input=fold_input,
-        ccd=ccd,
-        random_state=np.random.RandomState(rng_seed),
-        random_seed=rng_seed,
-    )
-    if verbose:
-      print(
-          f'Featurising data with seed {rng_seed} took'
-          f' {time.time() - featurisation_start_time:.2f} seconds.'
+    batches = []
+
+    for rng_seed in fold_input.rng_seeds:
+      featurisation_start_time = time.time()
+      if verbose:
+        print(f'Featurising data with seed {rng_seed}.')
+      batch = data_pipeline.process_item(
+          fold_input=fold_input,
+          ccd=ccd,
+          random_state=np.random.RandomState(rng_seed),
+          random_seed=rng_seed,
       )
-    batches.append(batch)
+      if verbose:
+        print(
+            f'Featurising data with seed {rng_seed} took'
+            f' {time.time() - featurisation_start_time:.2f} seconds.'
+        )
+      batches.append(batch)
 
-  return batches
+    return batches

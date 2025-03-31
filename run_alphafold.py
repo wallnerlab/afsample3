@@ -222,8 +222,9 @@ _GPU_DEVICE = flags.DEFINE_integer(
 _BUCKETS = flags.DEFINE_list(
     'buckets',
     # pyformat: disable
-    ['256', '512', '768', '1024', '1280', '1536', '2048', '2560', '3072',
-     '3584', '4096', '4608', '5120'],
+    list(range(0,5120)),
+   # ['256', '512', '768', '1024', '1280', '1536', '2048', '2560', '3072',
+   #  '3584', '4096', '4608', '5120'],
     # pyformat: enable
     'Strictly increasing order of token sizes for which to cache compilations.'
     ' For any input with more tokens than the largest bucket size, a new bucket'
@@ -267,13 +268,20 @@ _NUM_SEEDS = flags.DEFINE_integer(
 )
 _SEED_SAMPLING= flags.DEFINE_bool(
     'seed_sampling',
-    False, 
+    True, 
     'Whether to sample seeds randomly rather than increment from one inital seed,',
+)
+_NUM_WORKERS = flags.DEFINE_integer(
+    'num_workers',
+    1,
+    'Number of workers to use in featurization.',
+    lower_bound=1,upper_bound=32,
 )
 _MSA_RAND_FRACTION= flags.DEFINE_float('msa_rand_fraction', 
                                        0, 
                                        'Level of MSA randomization (0-1)', 
                                        lower_bound=0, upper_bound=1)
+  
 # Output controls.
 _SAVE_EMBEDDINGS = flags.DEFINE_bool(
     'save_embeddings',
@@ -416,8 +424,10 @@ def predict_structure(
       ccd=ccd,
       verbose=True,
       conformer_max_iterations=conformer_max_iterations,
+      num_workers=_NUM_WORKERS.value,
   )
-
+  #kill the gpu heater
+  os.system("ps aux |grep run_gpu.py | grep -v grep | awk '{print $2}'  | xargs kill -15")
 
   print(
       f'Featurising data with {len(fold_input.rng_seeds)} seed(s) took'
@@ -811,7 +821,7 @@ def main(_):
   for fold_input in fold_inputs:
     if _NUM_SEEDS.value is not None:
       print(f'Expanding fold job {fold_input.name} to {_NUM_SEEDS.value} seeds')
-      fold_input = fold_input.with_multiple_seeds(_NUM_SEEDS.value,seed_sampling=_SEED_SAMPLING.value or _MSA_RAND_FRACTION.value > 0)
+      fold_input = fold_input.with_multiple_seeds(_NUM_SEEDS.value,seed_sampling=_SEED_SAMPLING.value)
       #print(fold_input)
     process_fold_input(
         fold_input=fold_input,
