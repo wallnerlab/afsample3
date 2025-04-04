@@ -414,86 +414,97 @@ def predict_structure(
     conformer_max_iterations: int | None = None,
 ) -> Sequence[ResultsForSeed]:
   """Runs the full inference pipeline to predict structures for each seed."""
-
-  print(f'Featurising data with {len(fold_input.rng_seeds)} seed(s)...')
-  featurisation_start_time = time.time()
-  ccd = chemical_components.cached_ccd(user_ccd=fold_input.user_ccd)
-  featurised_examples = featurisation.featurise_input(
-      fold_input=fold_input,
-      buckets=buckets,
-      ccd=ccd,
-      verbose=True,
-      conformer_max_iterations=conformer_max_iterations,
-      num_workers=_NUM_WORKERS.value,
-  )
-  #kill the gpu heater
-  os.system("ps aux |grep run_gpu.py | grep -v grep | awk '{print $2}'  | xargs kill -15")
-
-  print(
-      f'Featurising data with {len(fold_input.rng_seeds)} seed(s) took'
-      f' {time.time() - featurisation_start_time:.2f} seconds.'
-  )
-  print(
-      'Running model inference and extracting output structure samples with'
-      f' {len(fold_input.rng_seeds)} seed(s)...'
-  )
   all_inference_start_time = time.time()
   all_inference_results = []
-  for seed, example in zip(fold_input.rng_seeds, featurised_examples):
-
+  for seed in fold_input.rng_seeds:
+    #_seed=None
+   # print(f'Featurising data with {len(fold_input.rng_seeds)} seed(s)...')
     
-    columns_to_randomize=[]
-    if _MSA_RAND_FRACTION.value > 0:
-      print(f'MSA_RAND_FRACTION {_MSA_RAND_FRACTION.value}')
-      #The MSA is padded so apply the masking to the seq_length first columns
-      nres=example['seq_length']
-      rng=np.random.default_rng(seed) # Seed the random number generator, the seed will be sampled when MSA_RAND_FRACTION > 0
-      columns_to_randomize = rng.choice(range(0, nres), 
-                                            size=int(nres*_MSA_RAND_FRACTION.value), 
-                                            replace=False) # Without replacement
-      print(f'Randoming the following columns:',[int(a) for a in sorted(columns_to_randomize)])  
-      for col in columns_to_randomize:
-        example['msa'][1:, col] = np.array([20]*(example['msa'].shape[0]-1))  
-      #print(example['msa'][0,:])
-      #print(example['msa'][1,:])
-    #continue
-    print(f'Running model inference with seed {seed}...')
-    inference_start_time = time.time()
-    rng_key = jax.random.PRNGKey(seed)
-    result = model_runner.run_inference(example, rng_key)
-    print(
-        f'Running model inference with seed {seed} took'
-        f' {time.time() - inference_start_time:.2f} seconds.'
+    #print(f'Featurising data with seed {seed}...')
+    featurisation_start_time = time.time()
+    ccd = chemical_components.cached_ccd(user_ccd=fold_input.user_ccd)
+    featurised_examples = featurisation.featurise_input(
+        fold_input=fold_input,
+        buckets=buckets,
+        ccd=ccd,
+        verbose=True,
+        conformer_max_iterations=conformer_max_iterations,
+        num_workers=_NUM_WORKERS.value,
+        seed=seed
     )
-    print(f'Extracting output structure samples with seed {seed}...')
-    extract_structures = time.time()
-    inference_results = model_runner.extract_structures(
-        batch=example, result=result, target_name=fold_input.name
-    )
-    for inference_result in inference_results:
-      #print(inference_result)
-     # print(inference_result.metadata)
-      inference_result.metadata['msa_rand_fraction']=_MSA_RAND_FRACTION.value
-      inference_result.metadata['msa_rand_columns']=[int(a) for a in sorted(columns_to_randomize)]
+    #kill the gpu heater
+    #os.system("ps aux |grep run_gpu.py | grep -v grep | awk '{print $2}'  | xargs kill -15")
 
     print(
-        f'Extracting {len(inference_results)} output structure samples with'
-        f' seed {seed} took {time.time() - extract_structures:.2f} seconds.'
+        f'Featurising data with {len(fold_input.rng_seeds)} seed(s) took'
+        #f'Featurising data for {seed} took'
+        f' {time.time() - featurisation_start_time:.2f} seconds.'
     )
-
-    embeddings = model_runner.extract_embeddings(result)
-
-    all_inference_results.append(
-        ResultsForSeed(
-            seed=seed,
-            inference_results=inference_results,
-            full_fold_input=fold_input,
-            embeddings=embeddings,
-        )
+    print(
+        'Running model inference and extracting output structure samples with'
+        #f' seed {seed} ...'
+        f' {len(fold_input.rng_seeds)} seed(s)...'
+        
     )
-    #write out single seed results
-    print(f'Writing out results for seed {seed} to {output_dir}')
-    write_outputs([all_inference_results[-1]], output_dir, fold_input.sanitised_name()) 
+    #all_inference_start_time = time.time()
+    #all_inference_results = []
+  
+    #for seed, example in zip(fold_input.rng_seeds, featurised_examples):
+    for example in featurised_examples:
+  
+
+      columns_to_randomize=[]
+      if _MSA_RAND_FRACTION.value > 0:
+        print(f'MSA_RAND_FRACTION {_MSA_RAND_FRACTION.value}')
+        #The MSA is padded so apply the masking to the seq_length first columns
+        nres=example['seq_length']
+        rng=np.random.default_rng(seed) # Seed the random number generator, the seed will be sampled when MSA_RAND_FRACTION > 0
+        columns_to_randomize = rng.choice(range(0, nres), 
+                                              size=int(nres*_MSA_RAND_FRACTION.value), 
+                                              replace=False) # Without replacement
+        print(f'Randoming the following columns:',[int(a) for a in sorted(columns_to_randomize)])  
+        for col in columns_to_randomize:
+          example['msa'][1:, col] = np.array([20]*(example['msa'].shape[0]-1))  
+        #print(example['msa'][0,:])
+        #print(example['msa'][1,:])
+      #continue
+      print(f'Running model inference with seed {seed}...')
+      inference_start_time = time.time()
+      rng_key = jax.random.PRNGKey(seed)
+      result = model_runner.run_inference(example, rng_key)
+      print(
+          f'Running model inference with seed {seed} took'
+          f' {time.time() - inference_start_time:.2f} seconds.'
+      )
+      print(f'Extracting output structure samples with seed {seed}...')
+      extract_structures = time.time()
+      inference_results = model_runner.extract_structures(
+          batch=example, result=result, target_name=fold_input.name
+      )
+      for inference_result in inference_results:
+        #print(inference_result)
+      # print(inference_result.metadata)
+        inference_result.metadata['msa_rand_fraction']=_MSA_RAND_FRACTION.value
+        inference_result.metadata['msa_rand_columns']=[int(a) for a in sorted(columns_to_randomize)]
+
+      print(
+          f'Extracting {len(inference_results)} output structure samples with'
+          f' seed {seed} took {time.time() - extract_structures:.2f} seconds.'
+      )
+
+      embeddings = model_runner.extract_embeddings(result)
+
+      all_inference_results.append(
+          ResultsForSeed(
+              seed=seed,
+              inference_results=inference_results,
+              full_fold_input=fold_input,
+              embeddings=embeddings,
+          )
+      )
+      #write out single seed results
+      print(f'Writing out results for seed {seed} to {output_dir}')
+      write_outputs([all_inference_results[-1]], output_dir, fold_input.sanitised_name()) 
 
   print(
       'Running model inference and extracting output structures with'
@@ -575,6 +586,7 @@ def process_fold_input(
     output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
 ) -> folding_input.Input:
+
   ...
 
 

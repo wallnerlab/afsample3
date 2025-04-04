@@ -78,6 +78,7 @@ def featurise_input(
     conformer_max_iterations: int | None = None,
     verbose: bool = False,
     num_workers: int = 1,
+    seed: int | None = None,
 ) -> Sequence[features.BatchDict]:
   """Featurise the folding input.
 
@@ -122,23 +123,33 @@ def featurise_input(
       ),
     ) 
 
-    batches = []
-
-    for rng_seed in fold_input.rng_seeds:
-      featurisation_start_time = time.time()
-      if verbose:
-        print(f'Featurising data with seed {rng_seed}.')
+    if seed is not None:
       batch = data_pipeline.process_item(
           fold_input=fold_input,
           ccd=ccd,
-          random_state=np.random.RandomState(rng_seed),
-          random_seed=rng_seed,
+          random_state=np.random.RandomState(seed),
+          random_seed=seed,
       )
-      if verbose:
-        print(
-            f'Featurising data with seed {rng_seed} took'
-            f' {time.time() - featurisation_start_time:.2f} seconds.'
-        )
-      batches.append(batch)
+      return [batch]
+    else:
 
-    return batches
+      batches = []
+
+      for rng_seed in fold_input.rng_seeds:
+        featurisation_start_time = time.time()
+        if verbose:
+          print(f'Featurising data with seed {rng_seed}.')
+        batch = data_pipeline.process_item(
+            fold_input=fold_input,
+            ccd=ccd,
+            random_state=np.random.RandomState(rng_seed),
+            random_seed=rng_seed,
+        )
+        if verbose:
+          print(
+              f'Featurising data with seed {rng_seed} took'
+              f' {time.time() - featurisation_start_time:.2f} seconds.'
+          )
+        batches.append(batch)
+
+      return batches
