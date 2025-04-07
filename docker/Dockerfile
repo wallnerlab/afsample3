@@ -8,7 +8,7 @@
 # if received directly from Google. Use is subject to terms of use available at
 # https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 
-FROM nvidia/cuda:12.6.0-base-ubuntu22.04
+FROM nvidia/cuda:12.2.0-base-ubuntu22.04
 
 # Some RUN statements are combined together to make Docker build run faster.
 # Get latest package listing, install software-properties-common, git, wget,

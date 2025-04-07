@@ -26,9 +26,11 @@ import csv
 import dataclasses
 import datetime
 import functools
+import glob
 import multiprocessing
 import os
 import pathlib
+import re
 import shutil
 import string
 import textwrap
@@ -271,6 +273,11 @@ _SEED_SAMPLING= flags.DEFINE_bool(
     True, 
     'Whether to sample seeds randomly rather than increment from one inital seed,',
 )
+_SEED_RESUME= flags.DEFINE_bool(
+    'seed_resume',
+    True, 
+    'Whether to sample seeds randomly rather than increment from one inital seed,',
+)
 _NUM_WORKERS = flags.DEFINE_integer(
     'num_workers',
     1,
@@ -412,15 +419,17 @@ def predict_structure(
     output_dir: os.PathLike[str] | str,
     buckets: Sequence[int] | None = None,
     conformer_max_iterations: int | None = None,
+    seeds_done: int = 0,
 ) -> Sequence[ResultsForSeed]:
   """Runs the full inference pipeline to predict structures for each seed."""
   all_inference_start_time = time.time()
   all_inference_results = []
-  for seed in fold_input.rng_seeds:
-    #_seed=None
-   # print(f'Featurising data with {len(fold_input.rng_seeds)} seed(s)...')
-    
-    #print(f'Featurising data with seed {seed}...')
+
+  if seeds_done > 0:
+    print(f'Found {seeds_done} seeds already done, {len(fold_input.rng_seeds)-seeds_done} seeds left.')
+
+  for seed in fold_input.rng_seeds[seeds_done:]:
+    print(f'Featurising data with seed {seed}...')
     featurisation_start_time = time.time()
     ccd = chemical_components.cached_ccd(user_ccd=fold_input.user_ccd)
     featurised_examples = featurisation.featurise_input(
@@ -432,18 +441,15 @@ def predict_structure(
         num_workers=_NUM_WORKERS.value,
         seed=seed
     )
-    #kill the gpu heater
-    #os.system("ps aux |grep run_gpu.py | grep -v grep | awk '{print $2}'  | xargs kill -15")
-
     print(
-        f'Featurising data with {len(fold_input.rng_seeds)} seed(s) took'
-        #f'Featurising data for {seed} took'
+        #f'Featurising data with {len(fold_input.rng_seeds)} seed(s) took'
+        f'Featurising data for {seed} took'
         f' {time.time() - featurisation_start_time:.2f} seconds.'
     )
     print(
         'Running model inference and extracting output structure samples with'
-        #f' seed {seed} ...'
-        f' {len(fold_input.rng_seeds)} seed(s)...'
+        f' seed {seed} ...'
+        #f' {len(fold_input.rng_seeds)} seed(s)...'
         
     )
     #all_inference_start_time = time.time()
@@ -652,15 +658,26 @@ def process_fold_input(
   if not fold_input.chains:
     raise ValueError('Fold input has no chains.')
 
+  seeds_done=0
   if os.path.exists(output_dir) and os.listdir(output_dir):
-    new_output_dir = (
-        f'{output_dir}_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'
-    )
-    print(
-        f'Output will be written in {new_output_dir} since {output_dir} is'
-        ' non-empty.'
-    )
-    output_dir = new_output_dir
+    if _SEED_RESUME.value: #This will resume creating models in the existing output dir
+      models_done=len(glob.glob(f'{output_dir}/seed*/model.cif'))
+      seeds_done=len(glob.glob(f'{output_dir}/seed*sample-0/model.cif'))
+
+
+      print(f'Found {models_done} models in {output_dir} for {seeds_done} seeds diffusion {int(models_done/seeds_done)} {_NUM_DIFFUSION_SAMPLES.value} implied.')
+      if models_done != seeds_done*_NUM_DIFFUSION_SAMPLES.value:
+        raise ValueError(f'Found {models_done} models in {output_dir} for {seeds_done} seeds expecting {seeds_done*_NUM_DIFFUSION_SAMPLES.value} with {_NUM_DIFFUSION_SAMPLES.value} diffusions.')
+      #sys.exit()
+    else:
+      new_output_dir = (
+          f'{output_dir}_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'
+      )
+      print(
+          f'Output will be written in {new_output_dir} since {output_dir} is'
+          ' non-empty.'
+      )
+      output_dir = new_output_dir
   else:
     print(f'Output will be written in {output_dir}')
 
@@ -685,8 +702,9 @@ def process_fold_input(
         output_dir=output_dir,
         buckets=buckets,
         conformer_max_iterations=conformer_max_iterations,
+        seeds_done=seeds_done,
     )
-    print(f'Writing outputs with {len(fold_input.rng_seeds)} seed(s)...')
+    print(f'Writing outputs with {len(all_inference_results)} seed(s)...')
     write_outputs(
         all_inference_results=all_inference_results,
         output_dir=output_dir,
