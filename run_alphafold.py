@@ -257,6 +257,18 @@ _NUM_DIFFUSION_SAMPLES = flags.DEFINE_integer(
     'Number of diffusion samples to generate.',
     lower_bound=1,
 )
+_NUM_MSA = flags.DEFINE_integer(
+    'num_msa',
+    1024,
+    'Number of msa sequences to use during inference.',
+    lower_bound=1,
+    upper_bound=1024,
+)
+_SHUFFLE_MSA= flags.DEFINE_bool(
+    'shuffle_msa',
+    True, 
+    'Whether to shuffle msa,',
+)
 _NUM_SEEDS = flags.DEFINE_integer(
     'num_seeds',
     None,
@@ -268,6 +280,8 @@ _NUM_SEEDS = flags.DEFINE_integer(
     ' the input JSON.',
     lower_bound=1,
 )
+_SEED_DONE = flags.DEFINE_integer('seed_done',None,'Set the seed done')
+
 _SEED_SAMPLING= flags.DEFINE_bool(
     'seed_sampling',
     True, 
@@ -288,7 +302,9 @@ _MSA_RAND_FRACTION= flags.DEFINE_float('msa_rand_fraction',
                                        0, 
                                        'Level of MSA randomization (0-1)', 
                                        lower_bound=0, upper_bound=1)
-  
+_LOW_MEMORY = flags.DEFINE_bool('low_memory',True,'Use low memory mode, only keep the last sample in memory')
+_TAR_OUTPUT = flags.DEFINE_bool('tar_output',False,'Tar the output files')
+
 # Output controls.
 _SAVE_EMBEDDINGS = flags.DEFINE_bool(
     'save_embeddings',
@@ -302,6 +318,8 @@ def make_model_config(
     flash_attention_implementation: attention.Implementation = 'triton',
     num_diffusion_samples: int = 5,
     num_recycles: int = 10,
+    num_msa: int = 1024,
+    shuffle_msa: bool = True,
     return_embeddings: bool = False,
 ) -> model.Model.Config:
   """Returns a model config with some defaults overridden."""
@@ -312,6 +330,13 @@ def make_model_config(
   config.heads.diffusion.eval.num_samples = num_diffusion_samples
   config.num_recycles = num_recycles
   config.return_embeddings = return_embeddings
+  config.evoformer.num_msa = num_msa
+  config.evoformer.shuffle_msa = shuffle_msa
+  print(f'Config: num_recycles={config.num_recycles}, num_msa={config.evoformer.num_msa}')
+  
+  #rint(config)
+  #print(config.evoformer.num_msa)
+  #sys.exit()
   return config
 
 
@@ -499,6 +524,9 @@ def predict_structure(
       )
 
       embeddings = model_runner.extract_embeddings(result)
+      if _LOW_MEMORY.value:
+        # Only keep the last sample in memory.
+        all_inference_results=[]
 
       all_inference_results.append(
           ResultsForSeed(
@@ -560,7 +588,13 @@ def write_outputs(
       if max_ranking_score is None or ranking_score > max_ranking_score:
         max_ranking_score = ranking_score
         max_ranking_result = result
-
+    if _TAR_OUTPUT.value:
+      tarfile = f'seed-{seed}.tar.zst'
+      tar_cmd=f'cd {output_dir};tar -cf - seed-{seed}*/* | zstd -T32 -o {tarfile};chmod 644 {tarfile}'
+      tar_cleanup_cmd=f'cd {output_dir};tar -tf {tarfile} -I zstd | xargs -d "\\n" rm -- 2>/dev/null; find seed-{seed}*/ -empty -delete'
+      print(f'Targing {seed} in {output_dir} to {tarfile}')
+      os.system(tar_cmd)
+      os.system(tar_cleanup_cmd)
     if embeddings := results_for_seed.embeddings:
       embeddings_dir = os.path.join(output_dir, f'seed-{seed}_embeddings')
       os.makedirs(embeddings_dir, exist_ok=True)
@@ -661,11 +695,21 @@ def process_fold_input(
   seeds_done=0
   if os.path.exists(output_dir) and os.listdir(output_dir):
     if _SEED_RESUME.value: #This will resume creating models in the existing output dir
-      models_done=len(glob.glob(f'{output_dir}/seed*/model.cif'))
-      seeds_done=len(glob.glob(f'{output_dir}/seed*sample-0/model.cif'))
+      if _TAR_OUTPUT.value:
+        seeds_done1=len(glob.glob(f'{output_dir}/seed*.tar.zst'))
+        seeds_done2=len(glob.glob(f'{output_dir}/seed*sample-0/model.cif'))
+        seeds_done=seeds_done1+seeds_done2
+        models_done=seeds_done*_NUM_DIFFUSION_SAMPLES.value
+      else:
+        models_done=len(glob.glob(f'{output_dir}/seed*/model.cif'))
+        seeds_done=len(glob.glob(f'{output_dir}/seed*sample-0/model.cif'))
+      print(f'Found {models_done} models in {output_dir} for {seeds_done} seeds.')
+      if _SEED_DONE.value is not None:
+        print(f'However I will assume {_SEED_DONE.value} seeds are done.')
+        seeds_done=_SEED_DONE.value
+        models_done=seeds_done*_NUM_DIFFUSION_SAMPLES.value
 
-
-      print(f'Found {models_done} models in {output_dir} for {seeds_done} seeds diffusion {int(models_done/seeds_done)} {_NUM_DIFFUSION_SAMPLES.value} implied.')
+      
       if models_done != seeds_done*_NUM_DIFFUSION_SAMPLES.value:
         raise ValueError(f'Found {models_done} models in {output_dir} for {seeds_done} seeds expecting {seeds_done*_NUM_DIFFUSION_SAMPLES.value} with {_NUM_DIFFUSION_SAMPLES.value} diffusions.')
       #sys.exit()
@@ -704,12 +748,13 @@ def process_fold_input(
         conformer_max_iterations=conformer_max_iterations,
         seeds_done=seeds_done,
     )
-    print(f'Writing outputs with {len(all_inference_results)} seed(s)...')
-    write_outputs(
-        all_inference_results=all_inference_results,
-        output_dir=output_dir,
-        job_name=fold_input.sanitised_name(),
-    )
+    #Output is written continously
+    #print(f'Writing outputs with {len(all_inference_results)} seed(s)...')
+    #write_outputs(
+    #    all_inference_results=all_inference_results,
+    #    output_dir=output_dir,
+    #    job_name=fold_input.sanitised_name(),
+    #)
     output = all_inference_results
 
   print(f'Fold job {fold_input.name} done.\n')
@@ -836,6 +881,8 @@ def main(_):
             ),
             num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
             num_recycles=_NUM_RECYCLES.value,
+            num_msa=_NUM_MSA.value,
+            shuffle_msa=_SHUFFLE_MSA.value,
             return_embeddings=_SAVE_EMBEDDINGS.value,
         ),
         device=devices[_GPU_DEVICE.value],

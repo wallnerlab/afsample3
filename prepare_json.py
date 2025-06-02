@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import random
 import sys
+import string
 # Input and output paths.
 flags.DEFINE_string(
     'fasta',
@@ -24,10 +25,18 @@ FLAGS = flags.FLAGS
 
 
 def read_fasta(fasta_path):
+    seqs = []
     with open(fasta_path, 'r') as f:
-        fasta = "".join([a.rstrip() for a in f.readlines() if not a.startswith('>')])
+        for line in f:
+            if line.startswith('>'):
+                seqs.append('')
+                continue
+            seqs[-1]+=line.strip()
+
+
+        #fasta = "".join([a.rstrip() for a in f.readlines() if not a.startswith('>')])
                  
-    return fasta    
+    return seqs    
 
 def protein_to_dict(seq,id='A',modifications=[], unpairedMSA=None,pairedMSA='',templates=[]):
 
@@ -41,7 +50,8 @@ def protein_to_dict(seq,id='A',modifications=[], unpairedMSA=None,pairedMSA='',t
     
 def main(argv):
     #pass
-    seq=read_fasta(FLAGS.fasta)
+   
+    seqs=read_fasta(FLAGS.fasta)
     
     #print(seq)
     #print (seq)
@@ -58,7 +68,11 @@ def main(argv):
     d['modelSeeds']=[random.randrange(2**32 - 1)]
     d['bondedAtomPairs']=None
     d['userCCD']=None
-    d['sequences'].append(protein_to_dict(seq,unpairedMSA=FLAGS.msa))
+    d['sequences']=[]
+    chains = list(string.ascii_uppercase)
+    for i,seq in enumerate(seqs):
+        d['sequences'].append(protein_to_dict(seq,id=chains[i],unpairedMSA=FLAGS.msa))
+
     with open(f'{FLAGS.fasta}.json','w') as f:
         json.dump(d, f, indent=4)
 

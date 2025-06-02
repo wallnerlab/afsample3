@@ -131,6 +131,7 @@ def create_msa_feat(msa: features.MSA) -> chex.ArrayDevice:
 
 def truncate_msa_batch(msa: features.MSA, num_msa: int) -> features.MSA:
   indices = jnp.arange(num_msa)
+  print(f'CHECK: Truncating MSA to {num_msa} sequences')
   return msa.index_msa_rows(indices)
 
 

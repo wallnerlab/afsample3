@@ -42,6 +42,7 @@ class Evoformer(hk.Module):
     seq_channel: int = 384
     max_relative_idx: int = 32
     num_msa: int = 1024
+    shuffle_msa: bool = True
     pair_channel: int = 128
     pairformer: 'Evoformer.PairformerConfig' = base_config.autocreate(
         single_transition=base_config.autocreate(),
@@ -207,7 +208,10 @@ class Evoformer(hk.Module):
   ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Processes MSA and returns updated pair activations."""
     dtype = pair_activations.dtype
-    msa_batch, key = featurization.shuffle_msa(key, msa_batch)
+    if self.config.shuffle_msa:
+        msa_batch, key = featurization.shuffle_msa(key, msa_batch)
+    else:
+        print('Not shuffling MSA.')
     msa_batch = featurization.truncate_msa_batch(msa_batch, self.config.num_msa)
     msa_feat = featurization.create_msa_feat(msa_batch).astype(dtype)
 
