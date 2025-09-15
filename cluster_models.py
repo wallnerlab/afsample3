@@ -22,6 +22,8 @@ import pickle
 import kmedoids
 import numpy
 from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.preprocessing import MinMaxScaler
+
 
 def cluster_structures(X):
     """
@@ -203,7 +205,7 @@ import tempfile
 
 def run_foldseek(file,db_directory='UNDEF',ext='.pdb',outpath='UNDEF'):
     outfile=file.replace(ext,"-self.foldseek")
-   
+
     with tempfile.TemporaryDirectory() as tmpdir:
         foldseek_run = ["foldseek", "easy-search", file, db_directory + "DB", outfile, tmpdir, "--threads", "2","--format-mode", "0", "--format-output", "query,target,alntmscore,qaln,taln,alnlen,evalue,bits", "--exhaustive-search", "1", "-s", "9.5"]
         if not os.path.isfile(outfile):
@@ -220,7 +222,7 @@ def run_foldseek(file,db_directory='UNDEF',ext='.pdb',outpath='UNDEF'):
         #    print("{:} already exists".format(outfile))
         return outfile
 
-def run_all_foldseek(pdb_files, outpath,n_cpu=4): #outpath):
+def run_all_foldseek(pdb_files, outpath, n_cpu=4, references=False): #outpath):
 # def main():
     """
     requires Foldseek and Pymol
@@ -269,22 +271,22 @@ def run_all_foldseek(pdb_files, outpath,n_cpu=4): #outpath):
 
 
 
-    
-    print("Creating database...")
-    create_db = ["foldseek", "createdb", db_directory, db_directory + "DB"]
-    if not os.path.isfile(db_directory + "DB"):
-        try:
-            response = subprocess.run(create_db, capture_output=True, text=True, check=True )
-        except subprocess.CalledProcessError as e:
-            print("ERROR:\n", e.stderr)
-        
-        print('Success database is up!')
-    else:
-        print("found an existing DB")
+    if not references:
+        print("Creating database...")
+        create_db = ["foldseek", "createdb", db_directory, db_directory + "DB"]
+        if not os.path.isfile(db_directory + "DB"):
+            try:
+                response = subprocess.run(create_db, capture_output=True, text=True, check=True )
+            except subprocess.CalledProcessError as e:
+                print("ERROR:\n", e.stderr)
+            
+            print('Success database is up!')
+        else:
+            print("found an existing DB")
+
     ext='.'+pdb_files[0].split('.')[-1]
     run_foldseek_db = partial(run_foldseek,db_directory=db_directory,ext=ext,outpath=outpath)
         
-    
 
     #________________Calculate foldseek self comparison of all predicted structures____________
     print("Foldseek all-against-all")
@@ -376,20 +378,34 @@ def get_loop_outliers(pdbfiles): #,ext='.pdb'): #outpath):
    # return files, files_pdb
     
 #orm_corr_mtx=populate_corr_mtx(results_data, outliers=outliers)
-def populate_corr_mtx(results_data, outliers=None, ext='.pdb'): 
+def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, foldseek_keys_n=None): 
     #files,files_pdb=remove_outliers(outpath,ext=ext)
      
     #foldseek_keys=[os.path.basename(f).replace(ext,'') for f in files_pdb]
+
+    if not foldseek_keys_n:
+        foldseek_keys=[(results_data['foldseek_ids'][i],results_data['foldseek_outputs'][i],i) #id,output,pdb
+                    for i in results_data['foldseek_ids'].keys() 
+                    if i not in outliers] 
     
+        N=len(foldseek_keys)
+        corr_mtx= np.zeros((N,N),dtype=int)
+        foldseek_keys_index = {key: i for i, (key,_,_) in enumerate(foldseek_keys)} 
+        
+    else:
+        foldseek_keys=[(results_data['foldseek_ids'][i],results_data['foldseek_outputs'][i],i) #id,output,pdb
+                    for i in results_data['foldseek_ids'].keys() 
+                    if i not in outliers] 
+        N=len(foldseek_keys)
+        corr_mtx= np.zeros((N, len(foldseek_keys_n)),dtype=int)
+        
+        foldseek_keys_index_n = {key: i for i, (key,_,_) in enumerate(foldseek_keys_n)} 
+        foldseek_keys_index = {key: i for i, (key,_,_) in enumerate(foldseek_keys)}  
 
-    foldseek_keys=[(results_data['foldseek_ids'][i],results_data['foldseek_outputs'][i],i) #id,output,pdb
-                   for i in results_data['foldseek_ids'].keys() 
-                   if i not in outliers] 
+    if references:
+        print('foldseek_keys', len(foldseek_keys))
+        print('foldseek_keys_index', len(foldseek_keys_index_n))
 
-    N=len(foldseek_keys)
-    #print(N)
-    foldseek_keys_index = {key: i for i, (key,_,_) in enumerate(foldseek_keys)}   
-    corr_mtx= np.zeros((N,N),dtype=int)
     for _,foldseek_output,_ in foldseek_keys:
         #print(i,end=", ",flush=True)
         with open(foldseek_output, 'r') as f:
@@ -397,23 +413,47 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb'):
                 cols = line.rstrip().split()
                 query=cols[0]
                 hit=cols[1]
-                bitscore=int(cols[-1])                
-                if hit in foldseek_keys_index: #query is filter in foldseek_keys
-                    i=foldseek_keys_index[query]
-                    j=foldseek_keys_index[hit]
+                bitscore=int(cols[-1])         
+
+                if references:
+                    searchspace = foldseek_keys_index_n
+                else:
+                    searchspace = foldseek_keys_index
+
+                if hit in searchspace: #query is filter in foldseek_keys
+                    if references:
+                        #print('HITT', query, hit)
+                        i=foldseek_keys_index[query]
+                        j=searchspace[hit]
+                    else:
+                        i=searchspace[query]
+                        j=searchspace[hit]
+
+                    #print(i, j, corr_mtx.shape)
+
                     corr_mtx[i,j] = bitscore
                     if corr_mtx[i,j] == -2147483648:   #bug in foldseek occasionally returns -2,147,483,648
                         corr_mtx[i,j] = 0   
-   
-    norm_corr_mtx = minmax_scale(corr_mtx, axis=1)
-    norm_corr_mtx = (norm_corr_mtx + norm_corr_mtx.T) /2
     
-      
-   
-    return {'pdbfiles':[i[2] for i in foldseek_keys],
-            'mtx':norm_corr_mtx}
+    return corr_mtx, foldseek_keys
+    # norm_corr_mtx = minmax_scale(corr_mtx, axis=1)
+    # norm_corr_mtx = (norm_corr_mtx + norm_corr_mtx.T) /2
+    
+    # return {'pdbfiles':[i[2] for i in foldseek_keys],
+    #         'mtx':norm_corr_mtx}
 
-  
+def scale_norm(corr_mtx, foldseek_keys, scaler=None):
+    if not scaler:
+        scaler = MinMaxScaler()
+    #norm_corr_mtx = minmax_scale(corr_mtx, axis=1)
+    print('corr matrix shape', corr_mtx.shape)
+    #sys.exit()
+    scaler_ = scaler.fit(corr_mtx)
+    norm_corr_mtx = scaler_.transform(corr_mtx)
+    #norm_corr_mtx = (norm_corr_mtx + norm_corr_mtx.T) /2
+    
+    return {'pdbfiles':[i[2] for i in foldseek_keys],
+            'mtx':norm_corr_mtx}, scaler_
 
 import pandas as pd
 #def pca_and_cluster(outpath,name,files=None,norm_corr_mtx=None,ext='.pdb',n_components=4,k=3,show_plot=False):
@@ -584,11 +624,26 @@ def main():
     #    print(f'Loading corr_mtx from file: {corr_mtx_file}')
     #    norm_corr_mtx=pickle.load(open(corr_mtx_file,'rb'))
     #else:    
-    norm_corr_mtx=populate_corr_mtx(results_data, outliers=outliers)
+    corr_mtx, foldseek_keys = populate_corr_mtx(results_data, outliers=outliers)
+    norm_corr_mtx, scaler_ = scale_norm(corr_mtx, foldseek_keys, scaler=None)
+
     #    with open(corr_mtx_file,'wb') as f:
     #        pickle.dump(norm_corr_mtx,f)
-   
-     
+
+    # MAP REFERENCES
+    with open('/proj/wallner-b/users/x_yogka/AFsample3/af3-dev/notebooks/representatives_hits.pkl', 'rb') as handle:
+        representatives_hits = pickle.load(handle)
+    
+    results_data_refs = run_all_foldseek(representatives_hits['1AD5'], args.outpath, n_cpu=args.n_cpu, references=True)
+    corr_mtx_refs, foldseek_keys_refs = populate_corr_mtx(results_data_refs, outliers=outliers,references=True, foldseek_keys_n=foldseek_keys)
+    norm_corr_mtx_refs, _ = scale_norm(corr_mtx_refs, foldseek_keys_refs, scaler=scaler_)
+    print(norm_corr_mtx_refs)
+
     df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
+
+    # for rep in representatives_hits['1AD5']:
+    #     outfile = run_foldseek(rep, db_directory=args.outpath+'/pdbs_for_db/',ext='.pdb',outpath=args.outpath)
+    #     print(outfile)
+
 if __name__ == "__main__":
     main()
