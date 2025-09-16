@@ -374,7 +374,6 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
         
         foldseek_keys_index_n = {key: i for i, (key,_,_) in enumerate(foldseek_keys_n)} 
         foldseek_keys_index = {key: i for i, (key,_,_) in enumerate(foldseek_keys)}  
-        print(foldseek_keys_index)
 
     if references:
         print('foldseek_keys', len(foldseek_keys))
@@ -387,7 +386,7 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
                 cols = line.rstrip().split()
                 query=cols[0]
                 hit=cols[1]
-                bitscore=int(cols[-1])         
+                bitscore=int(cols[-1])   
 
                 if references:
                     searchspace = foldseek_keys_index_n
@@ -395,10 +394,11 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
                     searchspace = foldseek_keys_index
 
                 if hit in searchspace: #query is filter in foldseek_keys
-                    if references:
-                        #print('HITT', query, hit)
+                    if references: 
                         i=foldseek_keys_index[query]
                         j=searchspace[hit]
+                        # print(query, hit, line, bitscore)
+                        # sys.exit()
                     else:
                         i=searchspace[query]
                         j=searchspace[hit]
@@ -419,20 +419,18 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
 def scale_norm(corr_mtx, foldseek_keys, scaler=None):
     if not scaler:
         scaler = MinMaxScaler()
-    #norm_corr_mtx = minmax_scale(corr_mtx, axis=1)
+        norm_corr_mtx = scaler.fit_transform(corr_mtx)
+        return {'pdbfiles':[i[2] for i in foldseek_keys],
+            'mtx':norm_corr_mtx}, scaler
     print('corr matrix shape', corr_mtx.shape)
-    #sys.exit()
-    scaler_ = scaler.fit(corr_mtx)
-    norm_corr_mtx = scaler_.transform(corr_mtx)
-    #norm_corr_mtx = (norm_corr_mtx + norm_corr_mtx.T) /2
-    
+    norm_corr_mtx = scaler.transform(corr_mtx)    
     return {'pdbfiles':[i[2] for i in foldseek_keys],
-            'mtx':norm_corr_mtx}, scaler_
+            'mtx':norm_corr_mtx}, scaler
 
 import pandas as pd
 
 class Clustering:
-    def __init__(self, outpath, name, k, n_components, norm_corr_mtx, norm_corr_mtx_ref):
+    def __init__(self, outpath, name, k, n_components, norm_corr_mtx, norm_corr_mtx_ref=None):
         self.outpath = outpath
         self.name = name
         self.k = k
@@ -457,18 +455,18 @@ class Clustering:
         labels,_ = self.cluster_structures(pca)
         print(np.unique(labels))
         if map_references:
-            pca_ref = sklearn_pca.transform(self.norm_corr_mtx_ref)
-            print('pca ref:', pca_ref.shape)
-            self.annotate_points_in_pca(pca, pca_ref, labels)
+            pcaref = sklearn_pca.transform(self.norm_corr_mtx_ref)
+            print('pca ref:', self.norm_corr_mtx_ref.shape, pcaref.shape)
+            self.annotate_points_in_pca(pca, pcaref, labels)
         else:
-            self.annotate_points_in_pca(pca=pca, pca_ref=None, labels=labels)
+            self.annotate_points_in_pca(pca=pca, pcaref=None, labels=labels)
     
     def annotate_points_in_pca(self, pca, pcaref, labels):
         fig, ax = plt.subplots(figsize=(8,6))
         c = ax.scatter(pca[:,0], pca[:,1], c=labels, cmap='viridis', s=20)
         plt.colorbar(c, label='Cluster Label')
-        #if pcaref!=None:
-        ax.scatter(pcaref[:,0], pcaref[:,1],marker='D', s=30)    #plot ref pdbs
+        if not pcaref==None:
+            ax.scatter(pcaref[:,0], pcaref[:,1],marker='D', s=30)    #plot ref pdbs
 
         files_of_interest, pca_of_interest = [], []
         for l in np.unique(labels):
@@ -512,9 +510,6 @@ class Clustering:
         clustering = HDBSCAN(min_cluster_size=opt_k)
         clustering.fit(X)
         return clustering.labels_,clustering
-
-
-
 
 #def pca_and_cluster(outpath,name,files=None,norm_corr_mtx=None,ext='.pdb',n_components=4,k=3,show_plot=False):
 def pca_and_cluster(outpath,name,norm_corr_mtx,n_components=4,k=3,show_plot=False):
@@ -632,7 +627,7 @@ def main():
                         help='Optional name (default: "default")')
     
      # Optional flags
-    parser.add_argument('-reference_file', type=str, default='UNDEF',
+    parser.add_argument('-reference_file', type=str, default=None,
                         help='.txt file with list of references)')
     parser.add_argument('-outlier_file', type=str, default='None',
                         help='outlier file to use)')
@@ -687,7 +682,10 @@ def main():
     #    norm_corr_mtx=pickle.load(open(corr_mtx_file,'rb'))
     #else:    
     corr_mtx, foldseek_keys = populate_corr_mtx(results_data, outliers=outliers)
+    print('corr_mtx', corr_mtx[:2])
     norm_corr_mtx, scaler_ = scale_norm(corr_mtx, foldseek_keys, scaler=None)
+    print('corr_mtx', norm_corr_mtx['mtx'][:2])
+    
 
     #    with open(corr_mtx_file,'wb') as f:
     #        pickle.dump(norm_corr_mtx,f)
@@ -699,14 +697,17 @@ def main():
             
         results_data_refs = run_all_foldseek(representatives_hits, args.outpath, n_cpu=args.n_cpu, references=True)
         corr_mtx_refs, foldseek_keys_refs = populate_corr_mtx(results_data_refs, outliers=outliers,references=True, foldseek_keys_n=foldseek_keys)
+        print('corr_mtx', corr_mtx_refs[:2])
         norm_corr_mtx_refs, _ = scale_norm(corr_mtx_refs, foldseek_keys_refs, scaler=scaler_)
-        print('REF_corr_mtx:', norm_corr_mtx_refs)
+        print('corr_mtx', norm_corr_mtx_refs['mtx'][:2])
         
         obj = Clustering(args.outpath, args.name, 3, 4, norm_corr_mtx, norm_corr_mtx_refs)
         obj.main(map_references=True)
     
     else:
-        df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
+        obj = Clustering(args.outpath, args.name, 3, 4, norm_corr_mtx)
+        obj.main(map_references=False)
+        # df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
 
     # for rep in representatives_hits['1AD5']:
     #     outfile = run_foldseek(rep, db_directory=args.outpath+'/pdbs_for_db/',ext='.pdb',outpath=args.outpath)
