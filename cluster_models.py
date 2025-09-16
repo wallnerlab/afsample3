@@ -572,6 +572,8 @@ def main():
                         help='Optional name (default: "default")')
     
      # Optional flags
+    parser.add_argument('-reference_file', type=str, default='UNDEF',
+                        help='.txt file with list of references)')
     parser.add_argument('-outlier_file', type=str, default='UNDEF',
                         help='outlier file to use)')
     parser.add_argument('--ext', type=str, default='.pdb',
@@ -631,10 +633,10 @@ def main():
     #        pickle.dump(norm_corr_mtx,f)
 
     # MAP REFERENCES
-    with open('/proj/wallner-b/users/x_yogka/AFsample3/af3-dev/notebooks/representatives_hits.pkl', 'rb') as handle:
-        representatives_hits = pickle.load(handle)
-    
-    results_data_refs = run_all_foldseek(representatives_hits['1AD5'], args.outpath, n_cpu=args.n_cpu, references=True)
+    with open(args.reference_file, "r") as f:
+        representatives_hits = [line.strip() for line in f if line.strip()]
+        
+    results_data_refs = run_all_foldseek(representatives_hits, args.outpath, n_cpu=args.n_cpu, references=True)
     corr_mtx_refs, foldseek_keys_refs = populate_corr_mtx(results_data_refs, outliers=outliers,references=True, foldseek_keys_n=foldseek_keys)
     norm_corr_mtx_refs, _ = scale_norm(corr_mtx_refs, foldseek_keys_refs, scaler=scaler_)
     print(norm_corr_mtx_refs)
