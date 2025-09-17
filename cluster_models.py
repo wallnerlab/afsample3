@@ -180,7 +180,7 @@ def run_foldseek(file,db_directory='UNDEF',ext='.pdb',outpath='UNDEF'):
     outfile=file.replace(ext,"-self.foldseek")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        foldseek_run = ["foldseek", "easy-search", file, db_directory + "DB", outfile, tmpdir, "--threads", "2","--format-mode", "0", "--format-output", "query,target,alntmscore,qaln,taln,alnlen,evalue,bits", "--exhaustive-search", "1", "-s", "9.5"]
+        foldseek_run = ["foldseek", "easy-search", file, db_directory + "DB", outfile, tmpdir, "--threads", "2","--format-mode", "0", "--format-output", "query,target,alntmscore,qaln,taln,alnlen,evalue,ttmscore", "--exhaustive-search", "1", "-s", "9.5"]
         if not os.path.isfile(outfile):
            # print(f"running foldseek on {' '.join(foldseek_run)}")
             try:
@@ -386,7 +386,8 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
                 cols = line.rstrip().split()
                 query=cols[0]
                 hit=cols[1]
-                bitscore=int(cols[-1])   
+                #bitscore=int(cols[-1])   
+                bitscore=int(float(cols[-1])*100)
 
                 if references:
                     searchspace = foldseek_keys_index_n
@@ -435,6 +436,7 @@ class Clustering:
         self.name = name
         self.k = k
         self.n_components = n_components
+        self.path_to_tmdf = '/proj/wallner-b/users/x_yogka/AFsample3/af3-dev/src/analysis/notebooks/intermediates/analysis_csvs_v3'
 
         # Ensemble
         self.norm_corr_mtx = norm_corr_mtx['mtx']
@@ -451,22 +453,24 @@ class Clustering:
         return sklearn_pca, pca
 
     def main(self, map_references=False):
+        self.read_tmout_with_intermediates()
         sklearn_pca, pca = self.run_pca()
         labels,_ = self.cluster_structures(pca)
+        labels_df = pd.DataFrame([self.pdbfiles, labels])
         print(np.unique(labels))
         if map_references:
             pcaref = sklearn_pca.transform(self.norm_corr_mtx_ref)
             print('pca ref:', self.norm_corr_mtx_ref.shape, pcaref.shape)
             self.annotate_points_in_pca(pca, pcaref, labels)
         else:
-            self.annotate_points_in_pca(pca=pca, pcaref=None, labels=labels)
+            self.annotate_points_in_pca(pca=pca, pcaref=[], labels=labels)
     
     def annotate_points_in_pca(self, pca, pcaref, labels):
-        fig, ax = plt.subplots(figsize=(8,6))
-        c = ax.scatter(pca[:,0], pca[:,1], c=labels, cmap='viridis', s=20)
+        fig, ax = plt.subplots(1, 2, figsize=(12,6))
+        c = ax[0].scatter(pca[:,0], pca[:,1], c=labels, cmap='viridis', s=20)
         plt.colorbar(c, label='Cluster Label')
-        if not pcaref==None:
-            ax.scatter(pcaref[:,0], pcaref[:,1],marker='D', s=30)    #plot ref pdbs
+        if not len(pcaref)==0:
+            ax[0].scatter(pcaref[:,0], pcaref[:,1],marker='D', s=30)    #plot ref pdbs
 
         files_of_interest, pca_of_interest = [], []
         for l in np.unique(labels):
@@ -476,12 +480,12 @@ class Clustering:
             for idx in kmed_idx:
                 files_of_interest.append([self.pdbfiles[idx], l, labels[idx]])
                 pca_of_interest.append(pca[idx])
-                ax.plot(pca[idx,0], pca[idx,1], 'r*', markersize=15) #highlight the medoids on the PCA plot
+                ax[0].plot(pca[idx,0], pca[idx,1], 'r*', markersize=15) #highlight the medoids on the PCA plot
 
         prefix=f'{self.outpath}/{self.name}-k{self.k}-pca_n{self.n_components}'
-        ax.set_xlabel('PCA 1')
-        ax.set_ylabel('PCA 2')
-        ax.set_title(f'PCA of structures colored by HDBSCAN clusters with K-medoids stars (k={self.k})')
+        ax[0].set_xlabel('PCA 1')
+        ax[0].set_ylabel('PCA 2')
+        ax[0].set_title(f'PCA of structures colored by HDBSCAN clusters with K-medoids stars (k={self.k})')
         plt.savefig(f'{prefix}-cluster.png')
         print(f'Saved figure to: {prefix}-cluster.png')
     
@@ -510,6 +514,13 @@ class Clustering:
         clustering = HDBSCAN(min_cluster_size=opt_k)
         clustering.fit(X)
         return clustering.labels_,clustering
+
+    def read_tmout_with_intermediates(self):
+        df = pd.read_csv(f'{self.path_to_tmdf}/intermediates_{self.name}.csv')
+        print(df.shape, df.columns)
+        print(df.model[:2].values)
+        renamed_pdbfiles = [a.replace('allmodels/', '').replace('_model', '/model') for a in self.pdbfiles[:2]]
+        print(self.pdbfiles[:2])
 
 #def pca_and_cluster(outpath,name,files=None,norm_corr_mtx=None,ext='.pdb',n_components=4,k=3,show_plot=False):
 def pca_and_cluster(outpath,name,norm_corr_mtx,n_components=4,k=3,show_plot=False):
