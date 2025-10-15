@@ -1,3 +1,6 @@
 [submodule "pathfinder"]
 	path = pathfinder
 	url = https://github.com/wallnerlab/pathfinder.git
+[submodule "alphafold3"]
+	path = alphafold3
+	url = https://github.com/google-deepmind/alphafold3.git
