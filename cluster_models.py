@@ -25,33 +25,6 @@ from sklearn.metrics.pairwise import euclidean_distances
 from sklearn.preprocessing import MinMaxScaler
 
 
-def cluster_structures(X):
-    """
-    loop through values of k and define best value of k with silhouette_score
-
-    Input: 
-        X : np.ndarray (n, m) | result of PCA
-
-    Output: 
-        cluster_labels : (n, 1) | list of optimal clusters for X
-    """
-
-    k_range = range(2,51)
-    sil_score = []
-    for k in k_range:
-        clustering = HDBSCAN(min_cluster_size=k,min_samples=1)
-        clustering.fit(X)
-        if len(set(clustering.labels_)) > 1 and len(set(clustering.labels_)) < len(X):
-            score = silhouette_score(X, clustering.labels_, metric='euclidean')
-            sil_score.append(score)
-        else:
-            sil_score.append(-1)
-
-    opt_k = k_range[np.argmax(sil_score)]
-    clustering = HDBSCAN(min_cluster_size=opt_k)
-    clustering.fit(X)
-    return clustering.labels_,clustering
-
 def k_medoids(X, l, labels, k=3, max_iter=100):
     """
     K-Medoid algorithm to find suitable representative structures from each cluster defined by HDBSCAN.
@@ -207,7 +180,7 @@ def run_foldseek(file,db_directory='UNDEF',ext='.pdb',outpath='UNDEF'):
     outfile=file.replace(ext,"-self.foldseek")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        foldseek_run = ["foldseek", "easy-search", file, db_directory + "DB", outfile, tmpdir, "--threads", "2","--format-mode", "0", "--format-output", "query,target,alntmscore,qaln,taln,alnlen,evalue,bits", "--exhaustive-search", "1", "-s", "9.5"]
+        foldseek_run = ["foldseek", "easy-search", file, db_directory + "DB", outfile, tmpdir, "--threads", "2","--format-mode", "0", "--format-output", "query,target,alntmscore,qaln,taln,alnlen,evalue,ttmscore", "--exhaustive-search", "1", "-s", "9.5"]
         if not os.path.isfile(outfile):
            # print(f"running foldseek on {' '.join(foldseek_run)}")
             try:
@@ -413,7 +386,8 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
                 cols = line.rstrip().split()
                 query=cols[0]
                 hit=cols[1]
-                bitscore=int(cols[-1])         
+                #bitscore=int(cols[-1])   
+                bitscore=int(float(cols[-1])*100)
 
                 if references:
                     searchspace = foldseek_keys_index_n
@@ -421,10 +395,11 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
                     searchspace = foldseek_keys_index
 
                 if hit in searchspace: #query is filter in foldseek_keys
-                    if references:
-                        #print('HITT', query, hit)
+                    if references: 
                         i=foldseek_keys_index[query]
                         j=searchspace[hit]
+                        # print(query, hit, line, bitscore)
+                        # sys.exit()
                     else:
                         i=searchspace[query]
                         j=searchspace[hit]
@@ -445,17 +420,108 @@ def populate_corr_mtx(results_data, outliers=None, ext='.pdb', references=None, 
 def scale_norm(corr_mtx, foldseek_keys, scaler=None):
     if not scaler:
         scaler = MinMaxScaler()
-    #norm_corr_mtx = minmax_scale(corr_mtx, axis=1)
+        norm_corr_mtx = scaler.fit_transform(corr_mtx)
+        return {'pdbfiles':[i[2] for i in foldseek_keys],
+            'mtx':norm_corr_mtx}, scaler
     print('corr matrix shape', corr_mtx.shape)
-    #sys.exit()
-    scaler_ = scaler.fit(corr_mtx)
-    norm_corr_mtx = scaler_.transform(corr_mtx)
-    #norm_corr_mtx = (norm_corr_mtx + norm_corr_mtx.T) /2
-    
+    norm_corr_mtx = scaler.transform(corr_mtx)    
     return {'pdbfiles':[i[2] for i in foldseek_keys],
-            'mtx':norm_corr_mtx}, scaler_
+            'mtx':norm_corr_mtx}, scaler
 
 import pandas as pd
+
+class Clustering:
+    def __init__(self, outpath, name, k, n_components, norm_corr_mtx, norm_corr_mtx_ref=None):
+        self.outpath = outpath
+        self.name = name
+        self.k = k
+        self.n_components = n_components
+        self.path_to_tmdf = '/proj/wallner-b/users/x_yogka/AFsample3/af3-dev/src/analysis/notebooks/intermediates/analysis_csvs_v3'
+
+        # Ensemble
+        self.norm_corr_mtx = norm_corr_mtx['mtx']
+        self.pdbfiles = norm_corr_mtx['pdbfiles']
+
+        # Refernce
+        if norm_corr_mtx_ref:
+            self.norm_corr_mtx_ref = norm_corr_mtx_ref['mtx']
+            self.refs = norm_corr_mtx_ref['pdbfiles']
+
+    def run_pca(self, plot=True, show_plot=False):
+        sklearn_pca = PCA(n_components=self.n_components)
+        pca = sklearn_pca.fit_transform(self.norm_corr_mtx)
+        return sklearn_pca, pca
+
+    def main(self, map_references=False):
+        self.read_tmout_with_intermediates()
+        sklearn_pca, pca = self.run_pca()
+        labels,_ = self.cluster_structures(pca)
+        labels_df = pd.DataFrame([self.pdbfiles, labels])
+        print(np.unique(labels))
+        if map_references:
+            pcaref = sklearn_pca.transform(self.norm_corr_mtx_ref)
+            print('pca ref:', self.norm_corr_mtx_ref.shape, pcaref.shape)
+            self.annotate_points_in_pca(pca, pcaref, labels)
+        else:
+            self.annotate_points_in_pca(pca=pca, pcaref=[], labels=labels)
+    
+    def annotate_points_in_pca(self, pca, pcaref, labels):
+        fig, ax = plt.subplots(1, 2, figsize=(12,6))
+        c = ax[0].scatter(pca[:,0], pca[:,1], c=labels, cmap='viridis', s=20)
+        plt.colorbar(c, label='Cluster Label')
+        if not len(pcaref)==0:
+            ax[0].scatter(pcaref[:,0], pcaref[:,1],marker='D', s=30)    #plot ref pdbs
+
+        files_of_interest, pca_of_interest = [], []
+        for l in np.unique(labels):
+            label_idx=np.argwhere(labels == l).flatten()
+            fp = kmedoids.fastpam1(euclidean_distances(pca[label_idx]), self.k, 100,random_state=42)
+            kmed_idx=label_idx[fp.medoids]
+            for idx in kmed_idx:
+                files_of_interest.append([self.pdbfiles[idx], l, labels[idx]])
+                pca_of_interest.append(pca[idx])
+                ax[0].plot(pca[idx,0], pca[idx,1], 'r*', markersize=15) #highlight the medoids on the PCA plot
+
+        prefix=f'{self.outpath}/{self.name}-k{self.k}-pca_n{self.n_components}'
+        ax[0].set_xlabel('PCA 1')
+        ax[0].set_ylabel('PCA 2')
+        ax[0].set_title(f'PCA of structures colored by HDBSCAN clusters with K-medoids stars (k={self.k})')
+        plt.savefig(f'{prefix}-cluster.png')
+        print(f'Saved figure to: {prefix}-cluster.png')
+    
+    def cluster_structures(self, X):
+        """
+        loop through values of k and define best value of k with silhouette_score
+
+        Input: 
+            X : np.ndarray (n, m) | result of PCA
+
+        Output: 
+            cluster_labels : (n, 1) | list of optimal clusters for X
+        """
+        k_range = range(2,51)
+        sil_score = []
+        for k in k_range:
+            clustering = HDBSCAN(min_cluster_size=k,min_samples=1)
+            clustering.fit(X)
+            if len(set(clustering.labels_)) > 1 and len(set(clustering.labels_)) < len(X):
+                score = silhouette_score(X, clustering.labels_, metric='euclidean')
+                sil_score.append(score)
+            else:
+                sil_score.append(-1)
+
+        opt_k = k_range[np.argmax(sil_score)]
+        clustering = HDBSCAN(min_cluster_size=opt_k)
+        clustering.fit(X)
+        return clustering.labels_,clustering
+
+    def read_tmout_with_intermediates(self):
+        df = pd.read_csv(f'{self.path_to_tmdf}/intermediates_{self.name}.csv')
+        print(df.shape, df.columns)
+        print(df.model[:2].values)
+        renamed_pdbfiles = [a.replace('allmodels/', '').replace('_model', '/model') for a in self.pdbfiles[:2]]
+        print(self.pdbfiles[:2])
+
 #def pca_and_cluster(outpath,name,files=None,norm_corr_mtx=None,ext='.pdb',n_components=4,k=3,show_plot=False):
 def pca_and_cluster(outpath,name,norm_corr_mtx,n_components=4,k=3,show_plot=False):
    # if norm_corr_mtx is None or files is None:
@@ -572,7 +638,9 @@ def main():
                         help='Optional name (default: "default")')
     
      # Optional flags
-    parser.add_argument('-outlier_file', type=str, default='UNDEF',
+    parser.add_argument('-reference_file', type=str, default=None,
+                        help='.txt file with list of references)')
+    parser.add_argument('-outlier_file', type=str, default='None',
                         help='outlier file to use)')
     parser.add_argument('--ext', type=str, default='.pdb',
                         help='File extension to filter (default: .pdb)')
@@ -625,21 +693,38 @@ def main():
     #    norm_corr_mtx=pickle.load(open(corr_mtx_file,'rb'))
     #else:    
     corr_mtx, foldseek_keys = populate_corr_mtx(results_data, outliers=outliers)
+    print('corr_mtx', corr_mtx[:2])
     norm_corr_mtx, scaler_ = scale_norm(corr_mtx, foldseek_keys, scaler=None)
+    print('corr_mtx', norm_corr_mtx['mtx'][:2])
+    
 
     #    with open(corr_mtx_file,'wb') as f:
     #        pickle.dump(norm_corr_mtx,f)
 
     # MAP REFERENCES
-    with open('/proj/wallner-b/users/x_yogka/AFsample3/af3-dev/notebooks/representatives_hits.pkl', 'rb') as handle:
-        representatives_hits = pickle.load(handle)
+    if args.reference_file:
+        with open(args.reference_file, "r") as f:
+            representatives_hits = [line.strip() for line in f if line.strip()]
+            
+        results_data_refs = run_all_foldseek(representatives_hits, args.outpath, n_cpu=args.n_cpu, references=True)
+        corr_mtx_refs, foldseek_keys_refs = populate_corr_mtx(results_data_refs, outliers=outliers,references=True, foldseek_keys_n=foldseek_keys)
+        print('corr_mtx', corr_mtx_refs[:2])
+        norm_corr_mtx_refs, _ = scale_norm(corr_mtx_refs, foldseek_keys_refs, scaler=scaler_)
+        print('corr_mtx', norm_corr_mtx_refs['mtx'][:2])
+        
+        obj = Clustering(args.outpath, args.name, 3, 4, norm_corr_mtx, norm_corr_mtx_refs)
+        obj.main(map_references=True)
     
-    results_data_refs = run_all_foldseek(representatives_hits['1AD5'], args.outpath, n_cpu=args.n_cpu, references=True)
-    corr_mtx_refs, foldseek_keys_refs = populate_corr_mtx(results_data_refs, outliers=outliers,references=True, foldseek_keys_n=foldseek_keys)
-    norm_corr_mtx_refs, _ = scale_norm(corr_mtx_refs, foldseek_keys_refs, scaler=scaler_)
-    print(norm_corr_mtx_refs)
+    #results_data_refs = run_all_foldseek(representatives_hits['1AD5'], args.outpath, n_cpu=args.n_cpu, references=True)
+    #corr_mtx_refs, foldseek_keys_refs = populate_corr_mtx(results_data_refs, outliers=outliers,references=True, foldseek_keys_n=foldseek_keys)
+    #norm_corr_mtx_refs, _ = scale_norm(corr_mtx_refs, foldseek_keys_refs, scaler=scaler_)
+    #print(norm_corr_mtx_refs)
 
-    pca,df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
+    #pca,df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
+    else:
+        obj = Clustering(args.outpath, args.name, 3, 4, norm_corr_mtx)
+        obj.main(map_references=False)
+        # df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
 
     # for rep in representatives_hits['1AD5']:
     #     outfile = run_foldseek(rep, db_directory=args.outpath+'/pdbs_for_db/',ext='.pdb',outpath=args.outpath)
@@ -647,3 +732,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+'''
+# EXAMPLE RUN
+python cluster_models.py /proj/wallner-b/users/x_yogka/AFsample3/af3-dev/notebooks/casestudy/1AD5/allmodels 
+                         local_data/1AD5 
+                         -reference_file /proj/wallner-b/users/x_yogka/AFsample3/af3-dev/notebooks/representatives_hits_files/1AD5.txt
+'''
