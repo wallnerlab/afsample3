@@ -21,6 +21,12 @@ flags.DEFINE_string(
     'Path to the msa file',
 )
 
+flags.DEFINE_bool(
+    'templates',
+     False,
+    'If templates should be used',
+)
+
 FLAGS = flags.FLAGS
 
 
@@ -70,8 +76,11 @@ def main(argv):
     d['userCCD']=None
     d['sequences']=[]
     chains = list(string.ascii_uppercase)
+    templates=[]
+    if FLAGS.templates:
+        templates=None
     for i,seq in enumerate(seqs):
-        d['sequences'].append(protein_to_dict(seq,id=chains[i],unpairedMSA=FLAGS.msa))
+        d['sequences'].append(protein_to_dict(seq,id=chains[i],unpairedMSA=FLAGS.msa,templates=templates))
 
     with open(f'{FLAGS.fasta}.json','w') as f:
         json.dump(d, f, indent=4)

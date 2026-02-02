@@ -196,7 +196,7 @@ _NHMMER_N_CPU = flags.DEFINE_integer(
 # Template search configuration.
 _MAX_TEMPLATE_DATE = flags.DEFINE_string(
     'max_template_date',
-    '2021-09-30',  # By default, use the date from the AlphaFold 3 paper.
+    '2900-09-30', #Use any template 2021-09-30',  # By default, use the date from the AlphaFold 3 paper.
     'Maximum template release date to consider. Format: YYYY-MM-DD. All '
     'templates released after this date will be ignored.',
 )
@@ -302,6 +302,19 @@ _MSA_RAND_FRACTION= flags.DEFINE_float('msa_rand_fraction',
                                        0, 
                                        'Level of MSA randomization (0-1)', 
                                        lower_bound=0, upper_bound=1)
+_MSA_RAND_RANDOMIZE = flags.DEFINE_bool(
+    'msa_rand_randomize',
+    False,
+    'will choose the msa_rand_fraction randomly for each run',
+)
+
+_MSA_RAND_PROFILE = flags.DEFINE_string(
+    'msa_rand_profile',
+    None,
+    'Path to a profile specifying msa randomization fractions for each position.',
+)
+
+
 _LOW_MEMORY = flags.DEFINE_bool('low_memory',True,'Use low memory mode, only keep the last sample in memory')
 _TAR_OUTPUT = flags.DEFINE_bool('tar_output',False,'Tar the output files')
 
@@ -452,6 +465,19 @@ def predict_structure(
 
   if seeds_done > 0:
     print(f'Found {seeds_done} seeds already done, {len(fold_input.rng_seeds)-seeds_done} seeds left.')
+  msa_rand_profile={}
+  if _MSA_RAND_PROFILE.value is not None:
+      #read profile
+      print(f'Using MSA randomization profile from {_MSA_RAND_PROFILE.value}')
+      with open(_MSA_RAND_PROFILE.value,'r') as f:
+        for line in f:
+          print(f'Line: {line.strip()}')
+          if line.startswith('#'):
+            continue
+          cols=line.strip().split()
+          index=int(cols[0])
+          frac=float(cols[1])
+          msa_rand_profile[index]=frac
 
   for seed in fold_input.rng_seeds[seeds_done:]:
     print(f'Featurising data with seed {seed}...')
@@ -485,14 +511,37 @@ def predict_structure(
   
 
       columns_to_randomize=[]
-      if _MSA_RAND_FRACTION.value > 0:
-        print(f'MSA_RAND_FRACTION {_MSA_RAND_FRACTION.value}')
+      choosen_msa_rand_fraction=0.0
+
+      if _MSA_RAND_PROFILE.value is not None:
+        rng=np.random.default_rng(seed) # Seed the random number generator, the seed will be sampled when MSA_RAND_FRACTION > 0
+        choosen_msa_rand_fraction = 42 #dummy value
+        for pos in msa_rand_profile:
+          r = rng.random() 
+          if msa_rand_profile[pos]>r:
+            columns_to_randomize.append(pos-1) #columns start from 0, position start from 1
+        print(f'Randoming the following columns (profile):',[int(a) for a in sorted(columns_to_randomize)])  
+        for col in columns_to_randomize:
+          example['msa'][1:, col] = np.array([20]*(example['msa'].shape[0]-1)) #OBS not first row  
+      elif _MSA_RAND_FRACTION.value > 0 or _MSA_RAND_RANDOMIZE.value==True:
+        choosen_msa_rand_fraction = _MSA_RAND_FRACTION.value
+        rng=np.random.default_rng(seed) # Seed the random number generator, the seed will be sampled when MSA_RAND_FRACTION > 0
+        if _MSA_RAND_RANDOMIZE.value:
+          # Randomly choose a MSA randomization fraction between 0 and _MSA_RAND_FRACTION
+          if _MSA_RAND_FRACTION.value > 0:
+            print(f'Randomizing MSA with a fraction between 0 and {_MSA_RAND_FRACTION.value}')
+            choosen_msa_rand_fraction = rng.uniform(0, _MSA_RAND_FRACTION.value)
+          else:
+            print(f'Randomizing MSA with a fraction between 0 and 0.5 (Default), changed upper bound by setting --msa_rand_fraction')
+            choosen_msa_rand_fraction = rng.uniform(0, 0.5)
+      
+          print(f'MSA_RAND_FRACTION {choosen_msa_rand_fraction}')
         #The MSA is padded so apply the masking to the seq_length first columns
         nres=example['seq_length']
-        rng=np.random.default_rng(seed) # Seed the random number generator, the seed will be sampled when MSA_RAND_FRACTION > 0
         columns_to_randomize = rng.choice(range(0, nres), 
-                                              size=int(nres*_MSA_RAND_FRACTION.value), 
+                                              size=int(nres*choosen_msa_rand_fraction), 
                                               replace=False) # Without replacement
+          
         print(f'Randoming the following columns:',[int(a) for a in sorted(columns_to_randomize)])  
         for col in columns_to_randomize:
           example['msa'][1:, col] = np.array([20]*(example['msa'].shape[0]-1))  
@@ -515,7 +564,7 @@ def predict_structure(
       for inference_result in inference_results:
         #print(inference_result)
       # print(inference_result.metadata)
-        inference_result.metadata['msa_rand_fraction']=_MSA_RAND_FRACTION.value
+        inference_result.metadata['msa_rand_fraction']=choosen_msa_rand_fraction
         inference_result.metadata['msa_rand_columns']=[int(a) for a in sorted(columns_to_randomize)]
 
       print(
@@ -696,9 +745,9 @@ def process_fold_input(
   if os.path.exists(output_dir) and os.listdir(output_dir):
     if _SEED_RESUME.value: #This will resume creating models in the existing output dir
       if _TAR_OUTPUT.value:
-        seeds_done1=len(glob.glob(f'{output_dir}/seed*.tar.zst'))
-        seeds_done2=len(glob.glob(f'{output_dir}/seed*sample-0/model.cif'))
-        seeds_done=seeds_done1+seeds_done2
+        seeds_done=len(glob.glob(f'{output_dir}/seed*.tar.zst'))
+        #seeds_done2=len(glob.glob(f'{output_dir}/seed*sample-0/model.cif'))
+        #seeds_done=seeds_done1+seeds_done2
         models_done=seeds_done*_NUM_DIFFUSION_SAMPLES.value
       else:
         models_done=len(glob.glob(f'{output_dir}/seed*/model.cif'))

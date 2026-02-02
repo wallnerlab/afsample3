@@ -555,7 +555,7 @@ def pca_and_cluster(outpath,name,norm_corr_mtx,n_components=4,k=3,show_plot=Fals
     df_all=pd.DataFrame(data)
     df_all.to_csv(f"{prefix}-structures_all.csv",index=False)
 
-    return df_sel,df_all
+    return pca,df_sel,df_all
 import argparse
 
 
@@ -639,7 +639,7 @@ def main():
     norm_corr_mtx_refs, _ = scale_norm(corr_mtx_refs, foldseek_keys_refs, scaler=scaler_)
     print(norm_corr_mtx_refs)
 
-    df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
+    pca,df_sel,df_all=pca_and_cluster(args.outpath,args.name,norm_corr_mtx,n_components=4,k=args.k,show_plot=args.show_plot)
 
     # for rep in representatives_hits['1AD5']:
     #     outfile = run_foldseek(rep, db_directory=args.outpath+'/pdbs_for_db/',ext='.pdb',outpath=args.outpath)
