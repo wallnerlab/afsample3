@@ -18,6 +18,9 @@ out at https://github.com/google-deepmind/alphafold3. You may only use these
 if received directly from Google. Use is subject to terms of use available at
 https://github.com/google-deepmind/alphafold3/blob/main/WEIGHTS_TERMS_OF_USE.md
 """
+
+import os
+print(os.environ)
 import sys
 #sys.path.insert(0, '/proj/wallner-b/users/x_bjowa/af3-dev/src')
 
@@ -28,7 +31,7 @@ import datetime
 import functools
 import glob
 import multiprocessing
-import os
+#import os
 import pathlib
 import re
 import shutil
@@ -55,7 +58,14 @@ from alphafold3.model.components import utils
 import haiku as hk
 import jax
 from jax import numpy as jnp
+from jax.experimental import mesh_utils
+from jax.experimental.shard_map import shard_map
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 import numpy as np
+
+
+#os.environ['XLA_PYTHON_CLIENT_PREALLOCATE']='false' #Added to reduce GPU memory usage
+#print(os.environ)
 
 
 _HOME_DIR = pathlib.Path(os.environ.get('HOME'))
@@ -221,6 +231,18 @@ _GPU_DEVICE = flags.DEFINE_integer(
     ' 1st GPU on the system. Useful on multi-GPU systems to pin each run to a'
     ' specific GPU.',
 )
+_USE_MULTI_GPU = flags.DEFINE_bool(
+    'use_multi_gpu',
+    False,
+    'Whether to use multiple GPUs for model parallelism to increase available'
+    ' memory. When enabled, the model will be sharded across all available GPUs.',
+)
+_NUM_GPUS = flags.DEFINE_integer(
+    'num_gpus',
+    None,
+    'Number of GPUs to use for multi-GPU inference. If not specified, will use'
+    ' all available GPUs. Only used when use_multi_gpu is True.',
+)
 _BUCKETS = flags.DEFINE_list(
     'buckets',
     # pyformat: disable
@@ -359,17 +381,60 @@ class ModelRunner:
   def __init__(
       self,
       config: model.Model.Config,
-      device: jax.Device,
+      device: jax.Device | None,
       model_dir: pathlib.Path,
+      use_multi_gpu: bool = False,
+      devices: list[jax.Device] | None = None,
   ):
     self._model_config = config
     self._device = device
     self._model_dir = model_dir
+    self._use_multi_gpu = use_multi_gpu
+    self._devices = devices or []
+    
+    if self._use_multi_gpu and len(self._devices) > 1:
+      print(f'Setting up multi-GPU inference with {len(self._devices)} GPUs')
+      # Create device mesh for model parallelism
+      self._device_mesh = Mesh(np.array(self._devices), axis_names=('model',))
+      # Setup sharding for model parameters - shard along the first dimension
+      self._param_sharding = NamedSharding(self._device_mesh, P('model'))
+      # Data is replicated across devices for now
+      self._data_sharding = NamedSharding(self._device_mesh, P(None))
+      print(f'Multi-GPU sharding setup: parameter sharding={P("model")}, data sharding={P(None)}')
+    else:
+      self._device_mesh = None
+      self._param_sharding = None
+      self._data_sharding = None
 
   @functools.cached_property
   def model_params(self) -> hk.Params:
     """Loads model parameters from the model directory."""
-    return params.get_model_haiku_params(model_dir=self._model_dir)
+    model_params = params.get_model_haiku_params(model_dir=self._model_dir)
+    
+    if self._use_multi_gpu and self._param_sharding is not None:
+      # Shard model parameters across GPUs for memory distribution
+      print(f'Sharding model parameters across {len(self._devices)} GPUs')
+      
+      def shard_param(x):
+        # Only shard large parameters that can be evenly divided
+        if (x.ndim > 0 and 
+            x.size >= 1024 and  # Only shard large parameters (>1KB)
+            x.shape[0] % len(self._devices) == 0):  # Must be divisible by num GPUs
+          print(f'Sharding parameter of shape {x.shape}')
+          return jax.device_put(x, self._param_sharding)
+        elif x.ndim == 0:  # Scalars
+          scalar_sharding = NamedSharding(self._device_mesh, P())
+          return jax.device_put(x, scalar_sharding)
+        else:
+          # Replicate small parameters or those that can't be evenly divided
+          if x.ndim > 0 and x.size >= 1024:
+            print(f'Replicating parameter of shape {x.shape} (not divisible by {len(self._devices)})')
+          replicate_sharding = NamedSharding(self._device_mesh, P(None))
+          return jax.device_put(x, replicate_sharding)
+      
+      model_params = jax.tree_util.tree_map(shard_param, model_params)
+    
+    return model_params
 
   @functools.cached_property
   def _model(
@@ -381,20 +446,63 @@ class ModelRunner:
     def forward_fn(batch):
       return model.Model(self._model_config)(batch)
 
-    return functools.partial(
-        jax.jit(forward_fn.apply, device=self._device), self.model_params
-    )
+    if self._use_multi_gpu and self._device_mesh is not None:
+      # Multi-GPU model with parameter sharding
+      print('Setting up multi-GPU model execution')
+      
+      def multi_gpu_apply(params, rng_key, batch):
+        return forward_fn.apply(params, rng_key, batch)
+      
+      # Use device mesh context for multi-GPU execution
+      with self._device_mesh:
+        jitted_apply = jax.jit(
+            multi_gpu_apply,
+            in_shardings=(self._param_sharding, None, self._data_sharding),
+            out_shardings=None
+        )
+      
+      return functools.partial(jitted_apply, self.model_params)
+    else:
+      # Single GPU model (original behavior)
+      return functools.partial(
+          jax.jit(forward_fn.apply, device=self._device), self.model_params
+      )
 
   def run_inference(
       self, featurised_example: features.BatchDict, rng_key: jnp.ndarray
   ) -> model.ModelResult:
     """Computes a forward pass of the model on a featurised example."""
-    featurised_example = jax.device_put(
-        jax.tree_util.tree_map(
-            jnp.asarray, utils.remove_invalidly_typed_feats(featurised_example)
-        ),
-        self._device,
+    
+    featurised_example = jax.tree_util.tree_map(
+        jnp.asarray, utils.remove_invalidly_typed_feats(featurised_example)
     )
+    
+    if self._use_multi_gpu and self._data_sharding is not None:
+      # Place data appropriately for multi-GPU setup
+      print(f'Data placed across {len(self._devices)} GPUs for inference')
+      
+      def place_data(x):
+        if x.ndim == 0:  # Scalar values
+          scalar_sharding = NamedSharding(self._device_mesh, P())
+          return jax.device_put(x, scalar_sharding)
+        else:  # Non-scalar values
+          return jax.device_put(x, self._data_sharding)
+      
+      featurised_example = jax.tree_util.tree_map(place_data, featurised_example)
+    else:
+      # Single GPU placement (original behavior)
+      featurised_example = jax.device_put(featurised_example, self._device)
+
+    result = self._model(rng_key, featurised_example)
+    result = jax.tree.map(np.asarray, result)
+    result = jax.tree.map(
+        lambda x: x.astype(jnp.float32) if x.dtype == jnp.bfloat16 else x,
+        result,
+    )
+    result = dict(result)
+    identifier = self.model_params['__meta__']['__identifier__'].tobytes()
+    result['__identifier__'] = identifier
+    return result
 
     result = self._model(rng_key, featurised_example)
     result = jax.tree.map(np.asarray, result)
@@ -851,29 +959,57 @@ def main(_):
     # Fail early on incompatible devices, but only if we're running inference.
     gpu_devices = jax.local_devices(backend='gpu')
     if gpu_devices:
-      compute_capability = float(
-          gpu_devices[_GPU_DEVICE.value].compute_capability
-      )
-      if compute_capability < 6.0:
-        raise ValueError(
-            'AlphaFold 3 requires at least GPU compute capability 6.0 (see'
-            ' https://developer.nvidia.com/cuda-gpus).'
+      if _USE_MULTI_GPU.value and len(gpu_devices) > 1:
+        print(f'Checking multi-GPU compatibility for {len(gpu_devices)} GPUs...')
+        for i, device in enumerate(gpu_devices):
+          compute_capability = float(device.compute_capability)
+          print(f'GPU {i}: {device} (compute capability: {compute_capability})')
+          if compute_capability < 6.0:
+            raise ValueError(
+                f'GPU {i} has compute capability {compute_capability} < 6.0. '
+                'AlphaFold 3 requires at least GPU compute capability 6.0 (see'
+                ' https://developer.nvidia.com/cuda-gpus).'
+            )
+          elif 7.0 <= compute_capability < 8.0:
+            xla_flags = os.environ.get('XLA_FLAGS')
+            required_flag = '--xla_disable_hlo_passes=custom-kernel-fusion-rewriter'
+            if not xla_flags or required_flag not in xla_flags:
+              raise ValueError(
+                  f'GPU {i} has compute capability 7.x. For devices with GPU compute capability 7.x (see'
+                  ' https://developer.nvidia.com/cuda-gpus) the ENV XLA_FLAGS must'
+                  f' include "{required_flag}".'
+              )
+            if _FLASH_ATTENTION_IMPLEMENTATION.value != 'xla':
+              raise ValueError(
+                  f'GPU {i} has compute capability 7.x. For devices with GPU compute capability 7.x (see'
+                  ' https://developer.nvidia.com/cuda-gpus) the'
+                  ' --flash_attention_implementation must be set to "xla".'
+              )
+      else:
+        # Single GPU compatibility check
+        compute_capability = float(
+            gpu_devices[_GPU_DEVICE.value].compute_capability
         )
-      elif 7.0 <= compute_capability < 8.0:
-        xla_flags = os.environ.get('XLA_FLAGS')
-        required_flag = '--xla_disable_hlo_passes=custom-kernel-fusion-rewriter'
-        if not xla_flags or required_flag not in xla_flags:
+        if compute_capability < 6.0:
           raise ValueError(
-              'For devices with GPU compute capability 7.x (see'
-              ' https://developer.nvidia.com/cuda-gpus) the ENV XLA_FLAGS must'
-              f' include "{required_flag}".'
+              'AlphaFold 3 requires at least GPU compute capability 6.0 (see'
+              ' https://developer.nvidia.com/cuda-gpus).'
           )
-        if _FLASH_ATTENTION_IMPLEMENTATION.value != 'xla':
-          raise ValueError(
-              'For devices with GPU compute capability 7.x (see'
-              ' https://developer.nvidia.com/cuda-gpus) the'
-              ' --flash_attention_implementation must be set to "xla".'
-          )
+        elif 7.0 <= compute_capability < 8.0:
+          xla_flags = os.environ.get('XLA_FLAGS')
+          required_flag = '--xla_disable_hlo_passes=custom-kernel-fusion-rewriter'
+          if not xla_flags or required_flag not in xla_flags:
+            raise ValueError(
+                'For devices with GPU compute capability 7.x (see'
+                ' https://developer.nvidia.com/cuda-gpus) the ENV XLA_FLAGS must'
+                f' include "{required_flag}".'
+            )
+          if _FLASH_ATTENTION_IMPLEMENTATION.value != 'xla':
+            raise ValueError(
+                'For devices with GPU compute capability 7.x (see'
+                ' https://developer.nvidia.com/cuda-gpus) the'
+                ' --flash_attention_implementation must be set to "xla".'
+            )
 
   notice = textwrap.wrap(
       'Running AlphaFold 3. Please note that standard AlphaFold 3 model'
@@ -916,27 +1052,66 @@ def main(_):
     data_pipeline_config = None
 
   if _RUN_INFERENCE.value:
-    devices = jax.local_devices(backend='gpu')
-    print(
-        f'Found local devices: {devices}, using device {_GPU_DEVICE.value}:'
-        f' {devices[_GPU_DEVICE.value]}'
-    )
+    all_devices = jax.local_devices(backend='gpu')
+    
+    if _USE_MULTI_GPU.value and len(all_devices) > 1:
+      # Multi-GPU setup
+      num_gpus = _NUM_GPUS.value or len(all_devices)
+      if num_gpus > len(all_devices):
+        raise ValueError(f'Requested {num_gpus} GPUs but only {len(all_devices)} available')
+      
+      devices = all_devices[:num_gpus]
+      print(f'Multi-GPU mode enabled: using {len(devices)} GPUs: {devices}')
+      
+      # Estimate memory usage per GPU
+      try:
+        memory_per_gpu = jax.devices()[0].memory_stats().get('bytes_limit', 0) // (1024**3)
+        total_memory = memory_per_gpu * len(devices)
+        print(f'Estimated total GPU memory available: ~{total_memory}GB ({memory_per_gpu}GB per GPU)')
+      except Exception as e:
+        print(f'Could not estimate GPU memory: {e}')
+      
+      model_runner = ModelRunner(
+          config=make_model_config(
+              flash_attention_implementation=typing.cast(
+                  attention.Implementation, _FLASH_ATTENTION_IMPLEMENTATION.value
+              ),
+              num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
+              num_recycles=_NUM_RECYCLES.value,
+              num_msa=_NUM_MSA.value,
+              shuffle_msa=_SHUFFLE_MSA.value,
+              return_embeddings=_SAVE_EMBEDDINGS.value,
+          ),
+          device=None,  # Not used in multi-GPU mode
+          model_dir=pathlib.Path(MODEL_DIR.value),
+          use_multi_gpu=True,
+          devices=devices,
+      )
+    else:
+      # Single GPU setup (original behavior)
+      devices = all_devices
+      print(
+          f'Single GPU mode: Found devices: {devices}, using device {_GPU_DEVICE.value}:'
+          f' {devices[_GPU_DEVICE.value]}'
+      )
+      
+      model_runner = ModelRunner(
+          config=make_model_config(
+              flash_attention_implementation=typing.cast(
+                  attention.Implementation, _FLASH_ATTENTION_IMPLEMENTATION.value
+              ),
+              num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
+              num_recycles=_NUM_RECYCLES.value,
+              num_msa=_NUM_MSA.value,
+              shuffle_msa=_SHUFFLE_MSA.value,
+              return_embeddings=_SAVE_EMBEDDINGS.value,
+          ),
+          device=devices[_GPU_DEVICE.value],
+          model_dir=pathlib.Path(MODEL_DIR.value),
+          use_multi_gpu=False,
+      )
 
     print('Building model from scratch...')
-    model_runner = ModelRunner(
-        config=make_model_config(
-            flash_attention_implementation=typing.cast(
-                attention.Implementation, _FLASH_ATTENTION_IMPLEMENTATION.value
-            ),
-            num_diffusion_samples=_NUM_DIFFUSION_SAMPLES.value,
-            num_recycles=_NUM_RECYCLES.value,
-            num_msa=_NUM_MSA.value,
-            shuffle_msa=_SHUFFLE_MSA.value,
-            return_embeddings=_SAVE_EMBEDDINGS.value,
-        ),
-        device=devices[_GPU_DEVICE.value],
-        model_dir=pathlib.Path(MODEL_DIR.value),
-    )
     # Check we can load the model parameters before launching anything.
     print('Checking that model parameters can be loaded...')
     _ = model_runner.model_params

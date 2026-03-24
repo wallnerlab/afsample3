@@ -224,7 +224,7 @@ _GPU_DEVICE = flags.DEFINE_integer(
 _BUCKETS = flags.DEFINE_list(
     'buckets',
     # pyformat: disable
-    list(range(0,5120)),
+    list(range(0,7000)),
    # ['256', '512', '768', '1024', '1280', '1536', '2048', '2560', '3072',
    #  '3584', '4096', '4608', '5120'],
     # pyformat: enable
