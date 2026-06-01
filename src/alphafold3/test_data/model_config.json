@@ -80,6 +80,7 @@
       "per_token_channels": 384
     },
     "seq_channel": 384,
+    "shuffle_msa": true,
     "template": {
       "dgram_features": {
         "max_bin": 50.75,
