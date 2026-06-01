@@ -192,7 +192,6 @@ _NHMMER_N_CPU = flags.DEFINE_integer(
     'Number of CPUs to use for Nhmmer. Default to min(cpu_count, 8). Going'
     ' beyond 8 CPUs provides very little additional speedup.',
 )
-
 # Template search configuration.
 _MAX_TEMPLATE_DATE = flags.DEFINE_string(
     'max_template_date',
