@@ -3,8 +3,7 @@
 
 AFsample3 is available to run as notebook on Google Colab. Try it by clicking on the button below:
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)]
-(https://colab.research.google.com/github/wallnerlab/afsample3/blob/main/AFsample3.ipynb)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/wallnerlab/afsample3/blob/main/AFsample3.ipynb)
 
 ![header](docs/header.jpg)
 
