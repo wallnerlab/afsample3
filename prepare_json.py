@@ -3,6 +3,8 @@
 
 #/usr/bin/env python
 
+import itertools
+
 from absl import flags,app
 from pathlib import Path
 import json
@@ -54,6 +56,13 @@ def protein_to_dict(seq,id='A',modifications=[], unpairedMSA=None,pairedMSA='',t
         'pairedMsaPath': unpairedMSA,
         'templates': templates}}
     
+def label_asym_ids():
+    n = 1
+    while True:
+        for combo in itertools.product(string.ascii_uppercase, repeat=n):
+            yield ''.join(combo)
+        n += 1
+        
 def main(argv):
     #pass
    
@@ -75,7 +84,14 @@ def main(argv):
     d['bondedAtomPairs']=None
     d['userCCD']=None
     d['sequences']=[]
-    chains = list(string.ascii_uppercase)
+    #chains = list(string.ascii_uppercase)
+    chains = list(string.ascii_uppercase + string.ascii_lowercase + string.digits)
+    if len(seqs) > len(chains):
+        print(f'Warning: More sequences ({len(seqs)}) than available chain IDs ({len(chains)}). Using itertools to generate more chain IDs, but this will only work for mmCIF')
+        chains = list(itertools.islice(label_asym_ids(), len(seqs)))
+
+#    print(chains,len(seqs))
+
     templates=[]
     if FLAGS.templates:
         templates=None
