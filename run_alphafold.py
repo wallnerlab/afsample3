@@ -323,6 +323,12 @@ _SAVE_EMBEDDINGS = flags.DEFINE_bool(
     False,
     'Whether to save the final trunk single and pair embeddings in the output.',
 )
+_SAVE_DISTOGRAM = flags.DEFINE_bool(
+    'save_distogram',
+    False,
+    'Whether to save the distogram logits (num_tokens x num_tokens x 64, float16)'
+    ' and bin edges of each seed as seed-<seed>_distogram.npz in the output.',
+)
 
 
 def make_model_config(
@@ -333,6 +339,7 @@ def make_model_config(
     num_msa: int = 1024,
     shuffle_msa: bool = True,
     return_embeddings: bool = False,
+    return_distogram: bool = False,
 ) -> model.Model.Config:
   """Returns a model config with some defaults overridden."""
   config = model.Model.Config()
@@ -342,6 +349,7 @@ def make_model_config(
   config.heads.diffusion.eval.num_samples = num_diffusion_samples
   config.num_recycles = num_recycles
   config.return_embeddings = return_embeddings
+  config.return_distogram = return_distogram
   config.evoformer.num_msa = num_msa
   config.evoformer.shuffle_msa = shuffle_msa
   print(f'Config: num_recycles={config.num_recycles}, num_msa={config.evoformer.num_msa}')
@@ -431,6 +439,22 @@ class ModelRunner:
       embeddings['pair_embeddings'] = result['pair_embeddings']
     return embeddings or None
 
+  def extract_distogram(
+      self,
+      batch: features.BatchDict,
+      result: model.ModelResult,
+  ) -> dict[str, np.ndarray] | None:
+    """Extracts the distogram logits (cropped to the tokens) and bin edges."""
+    if 'distogram_logits' not in result:
+      return None
+    num_tokens = int(batch['seq_length'])
+    return {
+        'logits': result['distogram_logits'][:num_tokens, :num_tokens].astype(
+            np.float16
+        ),
+        'bin_edges': np.asarray(result['distogram']['bin_edges']),
+    }
+
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
 class ResultsForSeed:
@@ -442,12 +466,14 @@ class ResultsForSeed:
     full_fold_input: The fold input that must also include the results of
       running the data pipeline - MSA and templates.
     embeddings: The final trunk single and pair embeddings, if requested.
+    distogram: The distogram logits and bin edges, if requested.
   """
 
   seed: int
   inference_results: Sequence[model.InferenceResult]
   full_fold_input: folding_input.Input
   embeddings: dict[str, np.ndarray] | None = None
+  distogram: dict[str, np.ndarray] | None = None
 
 
 def predict_structure(
@@ -572,6 +598,7 @@ def predict_structure(
       )
 
       embeddings = model_runner.extract_embeddings(result)
+      distogram = model_runner.extract_distogram(batch=example, result=result)
       if _LOW_MEMORY.value:
         # Only keep the last sample in memory.
         all_inference_results=[]
@@ -582,6 +609,7 @@ def predict_structure(
               inference_results=inference_results,
               full_fold_input=fold_input,
               embeddings=embeddings,
+              distogram=distogram,
           )
       )
       #write out single seed results
@@ -649,6 +677,10 @@ def write_outputs(
       post_processing.write_embeddings(
           embeddings=embeddings, output_dir=embeddings_dir
       )
+    if distogram := results_for_seed.distogram:
+      # a file, not a seed-<seed>_* directory, so the tar and resume globs ignore it
+      with open(os.path.join(output_dir, f'seed-{seed}_distogram.npz'), 'wb') as f:
+        np.savez_compressed(f, **distogram)
 
   if max_ranking_result is not None:  # True iff ranking_scores non-empty.
     post_processing.write_output(
@@ -932,6 +964,7 @@ def main(_):
             num_msa=_NUM_MSA.value,
             shuffle_msa=_SHUFFLE_MSA.value,
             return_embeddings=_SAVE_EMBEDDINGS.value,
+            return_distogram=_SAVE_DISTOGRAM.value,
         ),
         device=devices[_GPU_DEVICE.value],
         model_dir=pathlib.Path(MODEL_DIR.value),

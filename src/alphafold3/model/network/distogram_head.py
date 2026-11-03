@@ -78,4 +78,5 @@ class DistogramHead(hk.Module):
     return {
         'bin_edges': breaks,
         'contact_probs': contact_probs,
+        'logits': logits,
     }
